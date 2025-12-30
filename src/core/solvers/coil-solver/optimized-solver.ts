@@ -75,7 +75,8 @@ export class OptimizedCoilSolver {
       () => this.packWithStrategy(all, 'large-first'),
       () => this.packWithStrategy(all, 'by-diameter-groups'),
       () => this.packWithStrategy(all, 'volume-desc'),
-      () => this.packMixedOptimal(all), // New: optimized mixed packing
+      () => this.packMixedOptimal(all),
+      () => this.packLargestFirst(all), // Prioritize hardest-to-fit
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
@@ -217,6 +218,110 @@ export class OptimizedCoilSolver {
       if (cyl.placed) continue;
 
       const pos = this.findBestPosition(cyl, placedBoxes);
+      if (pos) {
+        const placedCyl = this.createPlacedCylinder(cyl, pos);
+        placed.push(placedCyl);
+        cyl.placed = true;
+        placedBoxes.push({
+          xMin: pos.x, xMax: pos.x + cyl.diameter,
+          yMin: pos.y, yMax: pos.y + cyl.length,
+          zMin: pos.z, zMax: pos.z + cyl.diameter,
+        });
+      }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
+  }
+
+  /**
+   * Pack largest diameter cylinders first - they need the best positions
+   */
+  private packLargestFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    // Sort by diameter DESC, then by length DESC
+    const sorted = [...allCylinders].sort((a, b) => {
+      if (b.diameter !== a.diameter) return b.diameter - a.diameter;
+      return b.length - a.length;
+    });
+
+    // First pass: place all on floor with optimal spacing
+    for (const cyl of sorted) {
+      if (cyl.placed) continue;
+
+      // Find best floor position
+      let bestPos: { x: number; y: number; z: number } | null = null;
+      let bestScore = -Infinity;
+
+      // Try positions along Y, preferring front of container
+      for (let y = 0; y + cyl.length <= this.L; y += 5) {
+        for (let x = 0; x + cyl.diameter <= this.W; x += 1) {
+          const pos = { x, y, z: 0 };
+          if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            // Score: prefer lower Y, lower X
+            const score = -y * 1000 - x;
+            if (score > bestScore) {
+              bestScore = score;
+              bestPos = pos;
+            }
+          }
+        }
+        if (bestPos) break; // Found position at this Y, use it
+      }
+
+      if (bestPos) {
+        const placedCyl = this.createPlacedCylinder(cyl, bestPos);
+        placed.push(placedCyl);
+        cyl.placed = true;
+        placedBoxes.push({
+          xMin: bestPos.x, xMax: bestPos.x + cyl.diameter,
+          yMin: bestPos.y, yMax: bestPos.y + cyl.length,
+          zMin: 0, zMax: cyl.diameter,
+        });
+      }
+    }
+
+    // Second pass: stack remaining (smallest first for stability)
+    const unplacedForStack = sorted.filter(c => !c.placed).sort((a, b) => a.diameter - b.diameter);
+
+    for (const cyl of unplacedForStack) {
+      // Find stacking position
+      const zLevels = [...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
+
+      for (const z of zLevels) {
+        if (z + cyl.diameter > this.H) continue;
+
+        let found = false;
+        for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += 1) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.length,
+                  zMin: pos.z, zMax: pos.z + cyl.diameter,
+                });
+                found = true;
+              }
+            }
+          }
+        }
+        if (found) break;
+      }
+    }
+
+    // Final pass: exhaustive search for remaining
+    const stillUnplaced = allCylinders.filter(c => !c.placed);
+    for (const cyl of stillUnplaced) {
+      const pos = this.exhaustiveSearch(cyl, placedBoxes);
       if (pos) {
         const placedCyl = this.createPlacedCylinder(cyl, pos);
         placed.push(placedCyl);
@@ -398,33 +503,49 @@ export class OptimizedCoilSolver {
     placed: PlacedBox[]
   ): { x: number; y: number; z: number } | null {
     const { diameter, length } = cyl;
-    const step = 5; // 5cm grid
 
-    // Floor first (z=0)
-    for (let y = 0; y + length <= this.L; y += step) {
-      for (let x = 0; x + diameter <= this.W; x += step) {
-        const pos = { x, y, z: 0 };
-        if (this.canPlace(pos, diameter, length, placed)) {
-          return pos;
-        }
-      }
-    }
-
-    // Then try stacking
-    const zLevels = new Set<number>();
-    for (const box of placed) {
-      zLevels.add(box.zMax);
-    }
-
-    for (const z of Array.from(zLevels).sort((a, b) => a - b)) {
-      if (z + diameter > this.H) continue;
-
+    // Try multiple grid sizes, from coarse to fine
+    for (const step of [10, 5, 2, 1]) {
+      // Floor first (z=0)
       for (let y = 0; y + length <= this.L; y += step) {
         for (let x = 0; x + diameter <= this.W; x += step) {
-          const pos = { x, y, z };
+          const pos = { x, y, z: 0 };
           if (this.canPlace(pos, diameter, length, placed)) {
-            if (this.hasSupport(pos, diameter, length, placed)) {
-              return pos;
+            return pos;
+          }
+        }
+      }
+
+      // Then try stacking at known Z levels
+      const zLevels = new Set<number>();
+      for (const box of placed) {
+        zLevels.add(box.zMax);
+      }
+
+      for (const z of Array.from(zLevels).sort((a, b) => a - b)) {
+        if (z + diameter > this.H) continue;
+
+        for (let y = 0; y + length <= this.L; y += step) {
+          for (let x = 0; x + diameter <= this.W; x += step) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, diameter, length, placed)) {
+              if (this.hasSupport(pos, diameter, length, placed)) {
+                return pos;
+              }
+            }
+          }
+        }
+      }
+
+      // Also try arbitrary Z positions (scan full height)
+      for (let z = 1; z + diameter <= this.H; z += step) {
+        for (let y = 0; y + length <= this.L; y += step) {
+          for (let x = 0; x + diameter <= this.W; x += step) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, diameter, length, placed)) {
+              if (this.hasSupport(pos, diameter, length, placed)) {
+                return pos;
+              }
             }
           }
         }
