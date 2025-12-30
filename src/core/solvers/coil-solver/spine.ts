@@ -23,11 +23,13 @@ export interface SpineNode {
 
 export class HoneycombSpine {
   private nodes: SpineNode[] = [];
+  private containerWidth: number;
+  private containerHeight: number;
 
-  constructor(
-    private containerWidth: number,
-    private containerHeight: number
-  ) {}
+  constructor(containerWidth: number, containerHeight: number) {
+    this.containerWidth = containerWidth;
+    this.containerHeight = containerHeight;
+  }
 
   /**
    * Yeni bir rulo eklendiğinde omurgayı günceller.

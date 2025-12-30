@@ -20,7 +20,6 @@ interface ReportData {
 export class ExportManager {
   static generatePDF(data: ReportData) {
     const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
 
     // --- BAŞLIK ---
     doc.setFontSize(18);

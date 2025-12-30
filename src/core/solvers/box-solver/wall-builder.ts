@@ -12,12 +12,10 @@ interface FreeBlock {
 }
 
 export class WallBuilder {
-  private container: Container;
   private items: CargoItem[];
   private freeBlocks: FreeBlock[] = [];
 
   constructor(container: Container, items: CargoItem[]) {
-    this.container = container;
     this.items = items;
 
     // Konteyneri başlangıçta tek büyük boşluk olarak tanımla
