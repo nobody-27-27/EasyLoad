@@ -16,6 +16,7 @@ export default function App() {
     resultItems,
     container,
     stats,
+    unplacedSummary,
   } = useStore();
 
   const handleExport = () => {
@@ -42,6 +43,7 @@ export default function App() {
       stats,
       cargoList,
       resultItems,
+      unplacedSummary,
       screenshotUrl: imgData,
     });
   };
@@ -176,7 +178,7 @@ export default function App() {
               <div className="grid grid-cols-2 gap-2 text-xs text-gray-500 mt-2">
                 <div className="bg-gray-100 p-2 rounded">
                   <span className="block font-bold text-gray-800">
-                    {stats.placedCount}
+                    {stats.placedCount}/{stats.totalCount}
                   </span>
                   Yerleşen
                 </div>
@@ -201,6 +203,20 @@ export default function App() {
                   Araç
                 </div>
               </div>
+
+              {/* 3. Yerleşmeyenler */}
+              {unplacedSummary.length > 0 && (
+                <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded">
+                  <div className="text-xs font-bold text-red-700 mb-1">
+                    Yüklenemeyenler ({stats.unplacedCount}):
+                  </div>
+                  <ul className="text-xs text-red-600 space-y-0.5">
+                    {unplacedSummary.map((item, idx) => (
+                      <li key={idx}>• {item.count}x {item.name}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {/* PDF Butonu */}
               <button
                 onClick={handleExport}
