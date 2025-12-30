@@ -5,6 +5,7 @@ import { Scene3D } from './components/Scene3D';
 import { useStore } from './store';
 import { ExportManager } from './core/infrastructure/export-manager';
 import { ProjectControls } from './components/ProjectControls';
+import { ResizableSidebar } from './components/ResizableSidebar';
 
 export default function App() {
   const {
@@ -52,8 +53,8 @@ export default function App() {
       style={{ height: '100vh', width: '100vw' }}
       className="flex bg-gray-50 text-gray-800 font-sans overflow-hidden"
     >
-      {/* SOL PANEL (KONTROLLER) - Açık renk tema */}
-      <div className="w-80 flex-shrink-0 flex flex-col border-r border-gray-300 bg-white shadow-lg z-20 overflow-y-auto">
+      {/* SOL PANEL (KONTROLLER) - Resizable */}
+      <ResizableSidebar defaultWidth={320} minWidth={280} maxWidth={600}>
         <div className="p-4 border-b border-gray-200 bg-blue-50">
           <h1 className="text-xl font-bold text-blue-800">3D Yükleme Sim</h1>
           <p className="text-xs text-blue-600">Profesyonel Optimizasyon v1.0</p>
@@ -116,7 +117,7 @@ export default function App() {
             {isCalculating ? 'Hesaplanıyor...' : 'HESAPLA'}
           </button>
         </div>
-      </div>
+      </ResizableSidebar>
 
       {/* SAĞ PANEL (GÖRSELLEŞTİRME) */}
       <div className="flex-grow relative bg-gray-200">
