@@ -1,4 +1,5 @@
 // src/core/solvers/coil-solver/optimized-solver.ts
+// Layer-based cylinder packing with proper support checking
 
 import type { Container, CargoItem } from '../../common/types';
 import type {
@@ -8,35 +9,34 @@ import type {
   PackingStatistics,
 } from './types';
 import { ORIENTATION_ROTATIONS } from './types';
-import type { CylinderOrientation } from '../../math/cylinder-math/cylinder-geometry';
 
-interface CylinderToPlace {
+interface Cylinder {
   item: CargoItem;
-  radius: number;
+  diameter: number;
   length: number;
   index: number;
 }
 
-interface PlacementPosition {
-  x: number;
-  y: number;
-  z: number;
-  orientation: CylinderOrientation;
+interface PlacedBox {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+  zMin: number;
+  zMax: number;
+  cylinder: PlacedCylinder;
 }
 
 /**
- * OptimizedCoilSolver - Smart 3D cylinder packing
+ * Layer-based cylinder packing solver
  *
- * Strategy:
- * 1. Group cylinders by similar length to pack together in Y-slices
- * 2. Within each Y-slice, use honeycomb packing in XZ plane
- * 3. Try multiple sorting strategies and pick the best result
+ * All cylinders are placed HORIZONTALLY (lying along Y axis)
+ * Uses layer-based packing with proper support verification
  */
 export class OptimizedCoilSolver {
-  private W: number;
-  private L: number;
-  private H: number;
-  private readonly GAP = 1;
+  private W: number;  // Container width (X)
+  private L: number;  // Container length (Y)
+  private H: number;  // Container height (Z)
 
   constructor(container: Container, _config: Partial<CoilSolverConfig> = {}) {
     this.W = container.dimensions.width;
@@ -45,406 +45,308 @@ export class OptimizedCoilSolver {
   }
 
   public solve(items: CargoItem[]): CoilSolverResult {
-    const cylinderItems = items.filter((item) => item.type === 'cylinder');
-    if (cylinderItems.length === 0) return this.emptyResult();
+    const cylinders = items.filter(i => i.type === 'cylinder');
+    if (cylinders.length === 0) return this.emptyResult();
 
-    // Expand all items
-    const allCylinders: CylinderToPlace[] = [];
+    // Expand all quantities
+    const all: Cylinder[] = [];
     let idx = 0;
-    for (const item of cylinderItems) {
+    for (const item of cylinders) {
       for (let i = 0; i < item.quantity; i++) {
-        allCylinders.push({
+        all.push({
           item: { ...item, quantity: 1 },
-          radius: item.dimensions.width / 2,
+          diameter: item.dimensions.width,
           length: item.dimensions.height,
           index: idx++,
         });
       }
     }
 
-    console.log(`=== COIL SOLVER ===`);
+    console.log(`=== CYLINDER PACKING (Layer-Based) ===`);
     console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
-    console.log(`Total cylinders: ${allCylinders.length}`);
+    console.log(`Cylinders to place: ${all.length}`);
 
-    // Try different strategies
-    const results = [
-      this.packByLengthGroups(allCylinders),
-      this.packGreedyByVolume(allCylinders),
-      this.packGreedyByDiameter(allCylinders),
-    ];
-
-    // Pick best result
-    let best = results[0];
-    for (const r of results) {
-      if (r.placed.length > best.placed.length) {
-        best = r;
-      }
-    }
-
-    console.log(`BEST: ${best.placed.length}/${allCylinders.length} placed`);
-
-    return {
-      placedCylinders: best.placed,
-      unplacedItems: best.unplaced,
-      statistics: this.calcStats(best.placed, best.unplaced.length),
-    };
-  }
-
-  /**
-   * Pack by grouping similar lengths together
-   */
-  private packByLengthGroups(cylinders: CylinderToPlace[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-    // Group by similar length (within 15cm tolerance)
-    const groups: CylinderToPlace[][] = [];
-    const sorted = [...cylinders].sort((a, b) => b.length - a.length);
-
-    for (const cyl of sorted) {
-      let added = false;
-      for (const group of groups) {
-        if (Math.abs(group[0].length - cyl.length) <= 15) {
-          group.push(cyl);
-          added = true;
-          break;
-        }
-      }
-      if (!added) {
-        groups.push([cyl]);
-      }
-    }
-
-    // Sort each group by diameter (largest first) for better honeycomb packing
-    for (const group of groups) {
-      group.sort((a, b) => b.radius - a.radius);
-    }
-
-    console.log(`Created ${groups.length} length groups:`, groups.map(g => `${g.length} items @ ~${g[0].length}cm`));
+    // Sort by diameter (largest first) then by length (longest first)
+    all.sort((a, b) => {
+      if (Math.abs(a.diameter - b.diameter) > 2) return b.diameter - a.diameter;
+      return b.length - a.length;
+    });
 
     const placed: PlacedCylinder[] = [];
-    const unplaced: CargoItem[] = [];
-    let currentY = 0;
-
-    // Pack each group as a Y-slice
-    for (const group of groups) {
-      const maxLength = Math.max(...group.map(c => c.length));
-
-      // Pack this group starting at currentY
-      for (const cyl of group) {
-        const pos = this.findPositionInYSlice(cyl, placed, currentY, currentY + maxLength);
-
-        if (pos) {
-          placed.push(this.createPlacedCylinder(cyl, pos));
-        } else {
-          // Try anywhere else in the container
-          const fallbackPos = this.findAnyPosition(cyl, placed);
-          if (fallbackPos) {
-            placed.push(this.createPlacedCylinder(cyl, fallbackPos));
-          } else {
-            unplaced.push(cyl.item);
-          }
-        }
-      }
-
-      currentY += maxLength + this.GAP;
-    }
-
-    console.log(`Length-groups strategy: ${placed.length}/${cylinders.length}`);
-    return { placed, unplaced };
-  }
-
-  /**
-   * Find position within a Y-slice
-   */
-  private findPositionInYSlice(
-    cyl: CylinderToPlace,
-    placed: PlacedCylinder[],
-    yMin: number,
-    _yMax: number
-  ): PlacementPosition | null {
-    const { radius, length } = cyl;
-    const diameter = radius * 2;
-
-    if (diameter > this.W || diameter > this.H) return null;
-    if (yMin + length > this.L) return null;
-
-    const rowHeight = radius * Math.sqrt(3);
-    let bestPos: PlacementPosition | null = null;
-    let bestScore = Infinity;
-
-    // Generate honeycomb positions in XZ plane
-    for (let row = 0; row < 20; row++) {
-      const z = row * rowHeight;
-      if (z + diameter > this.H) break;
-
-      const xOffset = (row % 2 === 1) ? radius : 0;
-
-      for (let x = radius + xOffset; x + radius <= this.W; x += diameter + this.GAP) {
-        // Try placing at yMin
-        if (this.canPlace(x, yMin, z, radius, length, 'horizontal-y', placed)) {
-          const score = z * 1000 + x;
-          if (score < bestScore) {
-            bestScore = score;
-            bestPos = { x, y: yMin, z, orientation: 'horizontal-y' };
-          }
-        }
-      }
-    }
-
-    return bestPos;
-  }
-
-  /**
-   * Find any valid position in container
-   */
-  private findAnyPosition(cyl: CylinderToPlace, placed: PlacedCylinder[]): PlacementPosition | null {
-    const { radius, length } = cyl;
-    const diameter = radius * 2;
-    const rowHeight = radius * Math.sqrt(3);
-
-    let bestPos: PlacementPosition | null = null;
-    let bestScore = Infinity;
-
-    // Collect all Y start positions
-    const yStarts = new Set<number>([0]);
-    for (const p of placed) {
-      if (p.orientation === 'horizontal-y') {
-        yStarts.add(p.position.y);
-        yStarts.add(p.position.y + p.length + this.GAP);
-      }
-    }
-
-    for (const y of yStarts) {
-      if (y + length > this.L) continue;
-
-      for (let row = 0; row < 20; row++) {
-        const z = row * rowHeight;
-        if (z + diameter > this.H) break;
-
-        const xOffset = (row % 2 === 1) ? radius : 0;
-
-        for (let x = radius + xOffset; x + radius <= this.W; x += diameter + this.GAP) {
-          if (this.canPlace(x, y, z, radius, length, 'horizontal-y', placed)) {
-            const score = y * 100000 + z * 1000 + x;
-            if (score < bestScore) {
-              bestScore = score;
-              bestPos = { x, y, z, orientation: 'horizontal-y' };
-            }
-          }
-        }
-      }
-    }
-
-    return bestPos;
-  }
-
-  /**
-   * Greedy packing by volume
-   */
-  private packGreedyByVolume(cylinders: CylinderToPlace[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-    const sorted = [...cylinders].sort((a, b) =>
-      (b.radius * b.radius * b.length) - (a.radius * a.radius * a.length)
-    );
-    return this.packGreedy(sorted, 'volume');
-  }
-
-  /**
-   * Greedy packing by diameter
-   */
-  private packGreedyByDiameter(cylinders: CylinderToPlace[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-    const sorted = [...cylinders].sort((a, b) => b.radius - a.radius);
-    return this.packGreedy(sorted, 'diameter');
-  }
-
-  /**
-   * Generic greedy packing
-   */
-  private packGreedy(cylinders: CylinderToPlace[], _name: string): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
     const unplaced: CargoItem[] = [];
 
-    for (const cyl of cylinders) {
-      const pos = this.findBestGreedyPosition(cyl, placed);
+    // Pack layer by layer
+    for (const cyl of all) {
+      const pos = this.findValidPosition(cyl, placedBoxes);
+
       if (pos) {
-        placed.push(this.createPlacedCylinder(cyl, pos));
+        const placedCyl = this.createPlacedCylinder(cyl, pos);
+        placed.push(placedCyl);
+
+        // Track as bounding box
+        placedBoxes.push({
+          xMin: pos.x,
+          xMax: pos.x + cyl.diameter,
+          yMin: pos.y,
+          yMax: pos.y + cyl.length,
+          zMin: pos.z,
+          zMax: pos.z + cyl.diameter,
+          cylinder: placedCyl,
+        });
       } else {
         unplaced.push(cyl.item);
       }
     }
 
-    return { placed, unplaced };
+    console.log(`Placed: ${placed.length}/${all.length}`);
+    if (unplaced.length > 0) {
+      console.log(`Unplaced: ${unplaced.length}`);
+    }
+
+    return {
+      placedCylinders: placed,
+      unplacedItems: unplaced,
+      statistics: this.calcStats(placed, unplaced.length),
+    };
   }
 
   /**
-   * Find best position using greedy approach
+   * Find a valid position with proper support
+   * Priority: Fill depth (Y) first, then width (X), then stack up (Z)
    */
-  private findBestGreedyPosition(cyl: CylinderToPlace, placed: PlacedCylinder[]): PlacementPosition | null {
-    const { radius, length } = cyl;
-    const diameter = radius * 2;
-    const rowHeight = radius * Math.sqrt(3);
+  private findValidPosition(
+    cyl: Cylinder,
+    placed: PlacedBox[]
+  ): { x: number; y: number; z: number } | null {
+    const { diameter, length } = cyl;
 
-    let bestPos: PlacementPosition | null = null;
-    let bestScore = Infinity;
+    // Check if it even fits in container
+    if (diameter > this.W || length > this.L || diameter > this.H) {
+      return null;
+    }
 
-    // Collect Y positions
-    const yStarts = new Set<number>([0]);
-    for (const p of placed) {
-      if (p.orientation === 'horizontal-y') {
-        yStarts.add(p.position.y);
-        yStarts.add(p.position.y + p.length + this.GAP);
+    // Determine valid Z levels (floors)
+    // Level 0 = ground (z=0)
+    // Level 1+ = on top of existing cylinders
+    const zLevels = new Set<number>();
+    zLevels.add(0); // Ground is always valid
+
+    // Add tops of existing cylinders as potential Z levels
+    for (const box of placed) {
+      zLevels.add(box.zMax);
+    }
+
+    // Sort Z levels (bottom to top)
+    const sortedZ = Array.from(zLevels)
+      .filter(z => z + diameter <= this.H)
+      .sort((a, b) => a - b);
+
+    // Try each Z level
+    for (const z of sortedZ) {
+      // Generate Y positions to try - use fine grid for complete coverage
+      const yPositions = new Set<number>();
+      yPositions.add(0);
+
+      // Add positions from existing cylinders
+      for (const box of placed) {
+        yPositions.add(box.yMax); // Right after existing
+        yPositions.add(box.yMin); // Aligned with existing
       }
-    }
 
-    // Also add intermediate positions for better packing
-    for (let y = 0; y <= this.L - length; y += Math.min(length, 50)) {
-      yStarts.add(y);
-    }
+      // Add grid positions at length intervals for thorough search
+      const yStep = Math.min(length, 50);
+      for (let y = 0; y + length <= this.L; y += yStep) {
+        yPositions.add(y);
+      }
+      // Always try the last possible position
+      yPositions.add(this.L - length);
 
-    for (const y of yStarts) {
-      if (y + length > this.L) continue;
+      const sortedY = Array.from(yPositions)
+        .filter(y => y >= 0 && y + length <= this.L)
+        .sort((a, b) => a - b);
 
-      for (let row = 0; row < 20; row++) {
-        const z = row * rowHeight;
-        if (z + diameter > this.H) break;
+      // Generate X positions to try - use fine grid for complete coverage
+      const xPositions = new Set<number>();
+      xPositions.add(0);
 
-        const xOffset = (row % 2 === 1) ? radius : 0;
+      // Add positions from existing cylinders
+      for (const box of placed) {
+        xPositions.add(box.xMax); // Right of existing
+        xPositions.add(box.xMin); // Aligned with existing
+      }
 
-        for (let x = radius + xOffset; x + radius <= this.W; x += diameter + this.GAP) {
-          if (this.canPlace(x, y, z, radius, length, 'horizontal-y', placed)) {
-            const score = y * 100000 + z * 1000 + x;
-            if (score < bestScore) {
-              bestScore = score;
-              bestPos = { x, y, z, orientation: 'horizontal-y' };
-            }
+      // Add grid positions at diameter intervals
+      const xStep = Math.min(diameter, 30);
+      for (let x = 0; x + diameter <= this.W; x += xStep) {
+        xPositions.add(x);
+      }
+      // Always try the last possible position
+      xPositions.add(this.W - diameter);
+
+      const sortedX = Array.from(xPositions)
+        .filter(x => x >= 0 && x + diameter <= this.W)
+        .sort((a, b) => a - b);
+
+      // Try each Y, then X position
+      for (const y of sortedY) {
+        for (const x of sortedX) {
+          if (this.isValidPlacement(x, y, z, diameter, length, placed)) {
+            return { x, y, z };
           }
         }
       }
     }
 
-    return bestPos;
+    return null;
   }
 
   /**
-   * Check if cylinder can be placed
+   * Check if a position is valid (no collision + proper support)
    */
-  private canPlace(
+  private isValidPlacement(
     x: number, y: number, z: number,
-    radius: number, length: number,
-    orientation: CylinderOrientation,
-    placed: PlacedCylinder[]
+    diameter: number, length: number,
+    placed: PlacedBox[]
   ): boolean {
-    const diameter = radius * 2;
-
     // Bounds check
-    if (x - radius < 0 || x + radius > this.W) return false;
+    if (x < 0 || x + diameter > this.W) return false;
     if (y < 0 || y + length > this.L) return false;
     if (z < 0 || z + diameter > this.H) return false;
 
-    // Collision check
-    for (const p of placed) {
-      if (this.collides(x, y, z, radius, length, orientation, p)) {
+    const newBox = {
+      xMin: x,
+      xMax: x + diameter,
+      yMin: y,
+      yMax: y + length,
+      zMin: z,
+      zMax: z + diameter,
+    };
+
+    // Check for collisions
+    for (const box of placed) {
+      if (this.boxesOverlap(newBox, box)) {
         return false;
       }
     }
 
+    // Check support - z=0 is always supported (floor)
+    if (z === 0) {
+      return true;
+    }
+
+    // For z > 0, must have at least one supporting cylinder
+    // A cylinder supports another if:
+    // 1. Its top (zMax) equals our bottom (z)
+    // 2. Their XY footprints overlap
+    let hasSupport = false;
+    for (const box of placed) {
+      if (Math.abs(box.zMax - z) < 1) { // Top of box is at our level (within 1cm tolerance)
+        // Check XY overlap
+        if (this.xyOverlap(newBox, box)) {
+          hasSupport = true;
+          break;
+        }
+      }
+    }
+
+    return hasSupport;
+  }
+
+  /**
+   * Check if two boxes overlap in 3D
+   */
+  private boxesOverlap(
+    a: { xMin: number; xMax: number; yMin: number; yMax: number; zMin: number; zMax: number },
+    b: { xMin: number; xMax: number; yMin: number; yMax: number; zMin: number; zMax: number }
+  ): boolean {
+    if (a.xMax <= b.xMin || a.xMin >= b.xMax) return false;
+    if (a.yMax <= b.yMin || a.yMin >= b.yMax) return false;
+    if (a.zMax <= b.zMin || a.zMin >= b.zMax) return false;
     return true;
   }
 
   /**
-   * Check collision between cylinders
+   * Check if two boxes overlap in XY plane (for support checking)
    */
-  private collides(
-    x: number, y: number, z: number,
-    radius: number, length: number,
-    orientation: CylinderOrientation,
-    other: PlacedCylinder
+  private xyOverlap(
+    a: { xMin: number; xMax: number; yMin: number; yMax: number },
+    b: { xMin: number; xMax: number; yMin: number; yMax: number }
   ): boolean {
-    const minDist = radius + other.radius + this.GAP;
-
-    if (orientation === 'horizontal-y' && other.orientation === 'horizontal-y') {
-      // Check Y overlap
-      if (y + length <= other.position.y || y >= other.position.y + other.length) {
-        return false;
-      }
-      // Check XZ circle distance
-      const c1z = z + radius;
-      const c2z = other.position.z + other.radius;
-      const dist = Math.sqrt((x - other.center.x) ** 2 + (c1z - c2z) ** 2);
-      return dist < minDist;
-    }
-
-    // Fallback to AABB
-    const bb1 = this.getBB(x, y, z, radius, length, orientation);
-    const bb2 = this.getPlacedBB(other);
-    return this.boxesOverlap(bb1, bb2);
+    if (a.xMax <= b.xMin || a.xMin >= b.xMax) return false;
+    if (a.yMax <= b.yMin || a.yMin >= b.yMax) return false;
+    return true;
   }
 
-  private getBB(x: number, y: number, z: number, r: number, len: number, orient: CylinderOrientation) {
-    if (orient === 'horizontal-y') {
-      return { minX: x - r, maxX: x + r, minY: y, maxY: y + len, minZ: z, maxZ: z + r * 2 };
-    }
-    return { minX: x - r, maxX: x + r, minY: y - r, maxY: y + r, minZ: z, maxZ: z + len };
-  }
+  /**
+   * Create a PlacedCylinder from position
+   */
+  private createPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
+    const radius = cyl.diameter / 2;
 
-  private getPlacedBB(p: PlacedCylinder) {
-    if (p.orientation === 'horizontal-y') {
-      return {
-        minX: p.center.x - p.radius, maxX: p.center.x + p.radius,
-        minY: p.position.y, maxY: p.position.y + p.length,
-        minZ: p.position.z, maxZ: p.position.z + p.radius * 2,
-      };
-    }
-    return {
-      minX: p.center.x - p.radius, maxX: p.center.x + p.radius,
-      minY: p.center.y - p.radius, maxY: p.center.y + p.radius,
-      minZ: p.position.z, maxZ: p.position.z + p.length,
+    // Position is the corner (left-front-bottom of bounding box)
+    // For horizontal cylinder along Y:
+    // - position.x = left edge (center.x - radius)
+    // - position.y = front edge (start of cylinder length)
+    // - position.z = bottom edge (center.z - radius)
+
+    const position = {
+      x: pos.x,
+      y: pos.y,
+      z: pos.z,
     };
-  }
 
-  private boxesOverlap(a: ReturnType<typeof this.getBB>, b: ReturnType<typeof this.getBB>): boolean {
-    return !(a.maxX <= b.minX || a.minX >= b.maxX ||
-             a.maxY <= b.minY || a.minY >= b.maxY ||
-             a.maxZ <= b.minZ || a.minZ >= b.maxZ);
-  }
-
-  private createPlacedCylinder(cyl: CylinderToPlace, pos: PlacementPosition): PlacedCylinder {
-    const { radius, length } = cyl;
-    const cornerPos = { x: pos.x - radius, y: pos.y, z: pos.z };
-    const centerPos = { x: pos.x, y: pos.y + length / 2, z: pos.z + radius };
+    // Center position
+    const center = {
+      x: pos.x + radius,
+      y: pos.y + cyl.length / 2,
+      z: pos.z + radius,
+    };
 
     return {
       item: cyl.item,
-      uniqueId: `${cyl.item.id}_${cyl.index}_${pos.orientation[0]}`,
-      position: cornerPos,
-      center: centerPos,
+      uniqueId: `cyl_${cyl.index}_${Date.now()}`,
+      position,
+      center,
       radius,
-      length,
-      orientation: pos.orientation,
-      rotation: ORIENTATION_ROTATIONS[pos.orientation],
-      layerId: Math.floor(pos.z / 50),
+      length: cyl.length,
+      orientation: 'horizontal-y',
+      rotation: ORIENTATION_ROTATIONS['horizontal-y'],
+      layerId: Math.floor(pos.z / 50), // Approximate layer based on Z
       supportedBy: [],
     };
   }
 
   private calcStats(placed: PlacedCylinder[], failed: number): PackingStatistics {
     if (placed.length === 0) {
-      return { totalVolumePlaced: 0, containerVolumeUsed: 0, volumeEfficiency: 0, layerCount: 0, itemsPlaced: 0, itemsFailed: failed };
+      return {
+        totalVolumePlaced: 0,
+        containerVolumeUsed: 0,
+        volumeEfficiency: 0,
+        layerCount: 0,
+        itemsPlaced: 0,
+        itemsFailed: failed,
+      };
     }
 
-    let totalVol = 0, maxX = 0, maxY = 0, maxZ = 0;
+    let totalVol = 0;
+    let maxX = 0, maxY = 0, maxZ = 0;
     const layers = new Set<number>();
 
     for (const c of placed) {
-      totalVol += Math.PI * c.radius ** 2 * c.length;
+      totalVol += Math.PI * c.radius * c.radius * c.length;
       layers.add(c.layerId);
-      const bb = this.getPlacedBB(c);
-      maxX = Math.max(maxX, bb.maxX);
-      maxY = Math.max(maxY, bb.maxY);
-      maxZ = Math.max(maxZ, bb.maxZ);
+      maxX = Math.max(maxX, c.position.x + c.radius * 2);
+      maxY = Math.max(maxY, c.position.y + c.length);
+      maxZ = Math.max(maxZ, c.position.z + c.radius * 2);
     }
+
+    const usedVol = maxX * maxY * maxZ;
 
     return {
       totalVolumePlaced: totalVol,
-      containerVolumeUsed: maxX * maxY * maxZ,
-      volumeEfficiency: totalVol / (maxX * maxY * maxZ),
+      containerVolumeUsed: usedVol,
+      volumeEfficiency: usedVol > 0 ? totalVol / usedVol : 0,
       layerCount: layers.size,
       itemsPlaced: placed.length,
       itemsFailed: failed,
@@ -455,7 +357,14 @@ export class OptimizedCoilSolver {
     return {
       placedCylinders: [],
       unplacedItems: [],
-      statistics: { totalVolumePlaced: 0, containerVolumeUsed: 0, volumeEfficiency: 0, layerCount: 0, itemsPlaced: 0, itemsFailed: 0 },
+      statistics: {
+        totalVolumePlaced: 0,
+        containerVolumeUsed: 0,
+        volumeEfficiency: 0,
+        layerCount: 0,
+        itemsPlaced: 0,
+        itemsFailed: 0,
+      },
     };
   }
 }
