@@ -2,20 +2,15 @@
 
 import type { Container, CargoItem, PlacedItem } from '../../common/types';
 import { WallBuilder } from '../box-solver/wall-builder';
-import { CoilSolver, type OrientationStrategy } from '../coil-solver';
+import { OptimizedCoilSolver } from '../coil-solver';
 
 /**
  * Configuration for the MixedSolver
  */
 export interface MixedSolverConfig {
-  coilStrategy: OrientationStrategy;
+  useOptimizedSolver: boolean; // Use the multi-strategy optimizer
   enableMixedStacking: boolean; // Allow boxes on top of coils
 }
-
-const DEFAULT_CONFIG: MixedSolverConfig = {
-  coilStrategy: 'horizontal-only', // Best for long cylinders (length > diameter)
-  enableMixedStacking: false,
-};
 
 /**
  * MixedSolver orchestrates the placement of different cargo types
@@ -28,11 +23,9 @@ const DEFAULT_CONFIG: MixedSolverConfig = {
  */
 export class MixedSolver {
   private container: Container;
-  private config: MixedSolverConfig;
 
-  constructor(container: Container, config: Partial<MixedSolverConfig> = {}) {
+  constructor(container: Container, _config: Partial<MixedSolverConfig> = {}) {
     this.container = container;
-    this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
   public solve(items: CargoItem[]): PlacedItem[] {
@@ -56,29 +49,30 @@ export class MixedSolver {
       }
     });
 
-    // 2. Solve COILS using the new CoilSolver
+    // 2. Solve COILS using the OptimizedCoilSolver (tries 32 strategy combinations)
     if (coils.length > 0) {
-      const coilSolver = new CoilSolver(
-        this.container,
-        {}, // Use default config
-        this.config.coilStrategy
-      );
-
+      const coilSolver = new OptimizedCoilSolver(this.container);
       const coilResult = coilSolver.solve(coils);
-      const coilPlacedItems = CoilSolver.toPlacedItems(coilResult.placedCylinders);
+
+      // Convert PlacedCylinder to PlacedItem
+      const coilPlacedItems = coilResult.placedCylinders.map((cyl) => ({
+        ...cyl.item,
+        uniqueId: cyl.uniqueId,
+        position: cyl.position,
+        rotation: cyl.rotation,
+        layerId: cyl.layerId,
+      }));
       placedItems.push(...coilPlacedItems);
 
-      // Log statistics for debugging (in development mode)
-      if (import.meta.env?.DEV) {
-        console.log('Coil Solver Statistics:', {
-          placed: coilResult.statistics.itemsPlaced,
-          failed: coilResult.statistics.itemsFailed,
-          efficiency: `${(coilResult.statistics.volumeEfficiency * 100).toFixed(1)}%`,
-          layers: coilResult.statistics.layerCount,
-        });
-      }
+      // Log statistics
+      console.log('Optimized Coil Solver Statistics:', {
+        placed: coilResult.statistics.itemsPlaced,
+        failed: coilResult.statistics.itemsFailed,
+        efficiency: `${(coilResult.statistics.volumeEfficiency * 100).toFixed(1)}%`,
+        layers: coilResult.statistics.layerCount,
+      });
 
-      // Add unplaced coils to warning
+      // Warn about unplaced coils
       if (coilResult.unplacedItems.length > 0) {
         console.warn(
           `Could not place ${coilResult.unplacedItems.length} coil(s):`,
