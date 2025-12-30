@@ -63,15 +63,117 @@ export class OptimizedCoilSolver {
       }
     }
 
-    console.log(`=== CYLINDER PACKING (Cross-Section) ===`);
+    console.log(`=== CYLINDER PACKING (Multi-Strategy) ===`);
     console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
     console.log(`Cylinders to place: ${all.length}`);
+
+    // Try multiple strategies and pick the best result
+    const strategies = [
+      () => this.packWithStrategy(all, 'length-groups'),
+      () => this.packWithStrategy(all, 'diameter-first'),
+      () => this.packWithStrategy(all, 'small-first'),
+      () => this.packWithStrategy(all, 'large-first'),
+    ];
+
+    let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] } | null = null;
+
+    for (const strategy of strategies) {
+      // Reset placed flags
+      all.forEach(c => c.placed = false);
+      const result = strategy();
+
+      if (!bestResult || result.placed.length > bestResult.placed.length) {
+        bestResult = result;
+      }
+
+      // If all placed, we're done
+      if (result.unplaced.length === 0) break;
+    }
+
+    const { placed, unplaced } = bestResult!;
+
+    console.log(`Placed: ${placed.length}/${all.length}`);
+    if (unplaced.length > 0) {
+      console.log(`Unplaced: ${unplaced.length}`);
+    }
+
+    return {
+      placedCylinders: placed,
+      unplacedItems: unplaced,
+      statistics: this.calcStats(placed, unplaced.length),
+    };
+  }
+
+  private packWithStrategy(
+    allCylinders: Cylinder[],
+    strategy: 'length-groups' | 'diameter-first' | 'small-first' | 'large-first'
+  ): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    // Reset
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    let cylinders: Cylinder[];
+
+    switch (strategy) {
+      case 'length-groups':
+        return this.packByLengthGroups(allCylinders);
+
+      case 'diameter-first':
+        // Sort by diameter DESC, then length DESC
+        cylinders = [...allCylinders].sort((a, b) => {
+          if (Math.abs(a.diameter - b.diameter) > 3) return b.diameter - a.diameter;
+          return b.length - a.length;
+        });
+        break;
+
+      case 'small-first':
+        // Small diameter first (better for filling gaps)
+        cylinders = [...allCylinders].sort((a, b) => {
+          if (Math.abs(a.diameter - b.diameter) > 3) return a.diameter - b.diameter;
+          return a.length - b.length;
+        });
+        break;
+
+      case 'large-first':
+        // Large diameter first, short length first
+        cylinders = [...allCylinders].sort((a, b) => {
+          if (Math.abs(a.diameter - b.diameter) > 3) return b.diameter - a.diameter;
+          return a.length - b.length;
+        });
+        break;
+    }
+
+    // Simple greedy packing
+    for (const cyl of cylinders) {
+      if (cyl.placed) continue;
+
+      const pos = this.findBestPosition(cyl, placedBoxes);
+      if (pos) {
+        const placedCyl = this.createPlacedCylinder(cyl, pos);
+        placed.push(placedCyl);
+        cyl.placed = true;
+        placedBoxes.push({
+          xMin: pos.x, xMax: pos.x + cyl.diameter,
+          yMin: pos.y, yMax: pos.y + cyl.length,
+          zMin: pos.z, zMax: pos.z + cyl.diameter,
+        });
+      }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
+  }
+
+  private packByLengthGroups(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
 
     const placed: PlacedCylinder[] = [];
     const placedBoxes: PlacedBox[] = [];
 
     // Group by length (within 15cm tolerance)
-    const groups = this.groupByLength(all, 15);
+    const groups = this.groupByLength(allCylinders, 15);
 
     let currentY = 0;
 
@@ -83,7 +185,6 @@ export class OptimizedCoilSolver {
       const stripLength = Math.max(...group.map(c => c.length));
 
       if (currentY + stripLength > this.L) {
-        // Try to fit remaining individually
         continue;
       }
 
@@ -99,7 +200,7 @@ export class OptimizedCoilSolver {
     }
 
     // Second pass: try to fit any unplaced cylinders in remaining gaps
-    const unplacedCyls = all.filter(c => !c.placed);
+    const unplacedCyls = allCylinders.filter(c => !c.placed);
     for (const cyl of unplacedCyls) {
       const pos = this.findGapPosition(cyl, placedBoxes);
       if (pos) {
@@ -114,18 +215,53 @@ export class OptimizedCoilSolver {
       }
     }
 
-    const unplaced = all.filter(c => !c.placed).map(c => c.item);
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
+  }
 
-    console.log(`Placed: ${placed.length}/${all.length}`);
-    if (unplaced.length > 0) {
-      console.log(`Unplaced: ${unplaced.length}`);
+  private findBestPosition(
+    cyl: Cylinder,
+    placedBoxes: PlacedBox[]
+  ): { x: number; y: number; z: number } | null {
+    const { diameter, length } = cyl;
+
+    if (diameter > this.W || length > this.L || diameter > this.H) {
+      return null;
     }
 
-    return {
-      placedCylinders: placed,
-      unplacedItems: unplaced,
-      statistics: this.calcStats(placed, unplaced.length),
-    };
+    // Collect Y positions
+    const ySet = new Set<number>();
+    ySet.add(0);
+    for (const box of placedBoxes) {
+      ySet.add(box.yMin);
+      ySet.add(box.yMax);
+    }
+
+    // Collect Z levels
+    const zSet = new Set<number>();
+    zSet.add(0);
+    for (const box of placedBoxes) {
+      zSet.add(box.zMax);
+    }
+
+    const sortedY = Array.from(ySet).filter(y => y + length <= this.L).sort((a, b) => a - b);
+    const sortedZ = Array.from(zSet).filter(z => z + diameter <= this.H).sort((a, b) => a - b);
+
+    // Priority: lowest Y, then lowest Z, then lowest X
+    for (const y of sortedY) {
+      for (const z of sortedZ) {
+        for (let x = 0; x + diameter <= this.W; x++) {
+          const pos = { x, y, z };
+          if (this.canPlace(pos, diameter, length, placedBoxes)) {
+            if (z === 0 || this.hasSupport(pos, diameter, length, placedBoxes)) {
+              return pos;
+            }
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   private groupByLength(cylinders: Cylinder[], tolerance: number): Cylinder[][] {
