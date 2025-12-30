@@ -11,47 +11,25 @@ import { DEFAULT_COIL_SOLVER_CONFIG, ORIENTATION_ROTATIONS } from './types';
 import type { CylinderOrientation } from '../../math/cylinder-math/cylinder-geometry';
 
 /**
- * Sorting strategy for items
+ * Candidate position for placing a cylinder
  */
-type SortStrategy =
-  | 'volume-desc'      // Largest volume first
-  | 'volume-asc'       // Smallest volume first
-  | 'diameter-desc'    // Largest diameter first
-  | 'diameter-asc'     // Smallest diameter first
-  | 'length-desc'      // Longest first
-  | 'length-asc'       // Shortest first
-  | 'aspect-ratio-desc' // Highest aspect ratio (length/diameter) first
-  | 'aspect-ratio-asc'; // Lowest aspect ratio first
-
-/**
- * Orientation strategy
- */
-type OrientationMode = 'horizontal' | 'vertical' | 'mixed-prefer-horizontal' | 'mixed-prefer-vertical';
-
-/**
- * A placement attempt result
- */
-interface PlacementAttempt {
-  sortStrategy: SortStrategy;
-  orientationMode: OrientationMode;
-  placed: PlacedCylinder[];
-  unplaced: CargoItem[];
-  score: number;
+interface CandidatePosition {
+  x: number;           // Center X
+  y: number;           // Start Y (for horizontal) or Center Y (for vertical)
+  z: number;           // Bottom Z
+  orientation: CylinderOrientation;
+  score: number;       // Lower is better
 }
 
 /**
- * OptimizedCoilSolver uses multiple strategies and picks the best result.
+ * OptimizedCoilSolver - Advanced 3D cylinder packing algorithm
  *
- * This solver:
- * 1. Tries 8 different sorting strategies
- * 2. Tries 4 different orientation modes
- * 3. Runs 32 total placement attempts
- * 4. Returns the best result (most items placed, highest efficiency)
- *
- * For each attempt, it uses a greedy bin-packing algorithm with:
- * - Systematic position generation (honeycomb for horizontal, grid for vertical)
- * - Collision detection using precise circular geometry
- * - Score-based position selection (prioritize filling back, bottom, left)
+ * Key features:
+ * - Dynamic position generation based on already-placed cylinders
+ * - Tries BOTH orientations for every single item
+ * - Valley/nesting detection for tight honeycomb packing
+ * - Multiple sorting strategies with best result selection
+ * - Precise circular collision detection
  */
 export class OptimizedCoilSolver {
   private container: Container;
@@ -63,7 +41,7 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * Solve with optimization - tries multiple strategies
+   * Main solve method - tries multiple strategies and returns best result
    */
   public solve(items: CargoItem[]): CoilSolverResult {
     const cylinderItems = items.filter((item) => item.type === 'cylinder');
@@ -72,7 +50,7 @@ export class OptimizedCoilSolver {
       return this.emptyResult();
     }
 
-    // Flatten items (expand quantities)
+    // Expand quantities into individual items
     const flatItems: CargoItem[] = [];
     for (const item of cylinderItems) {
       for (let i = 0; i < item.quantity; i++) {
@@ -82,102 +60,54 @@ export class OptimizedCoilSolver {
 
     const totalItems = flatItems.length;
 
-    // Try all combinations of strategies
-    const sortStrategies: SortStrategy[] = [
-      'volume-desc',
-      'diameter-desc',
-      'length-desc',
-      'aspect-ratio-desc',
-      'volume-asc',
-      'diameter-asc',
-      'length-asc',
-      'aspect-ratio-asc',
+    // Try multiple sorting strategies
+    const strategies = [
+      { name: 'volume-desc', fn: this.sortByVolumeDesc.bind(this) },
+      { name: 'diameter-desc', fn: this.sortByDiameterDesc.bind(this) },
+      { name: 'length-desc', fn: this.sortByLengthDesc.bind(this) },
+      { name: 'volume-asc', fn: this.sortByVolumeAsc.bind(this) },
+      { name: 'mixed', fn: this.sortMixed.bind(this) },
     ];
 
-    const orientationModes: OrientationMode[] = [
-      'horizontal',
-      'vertical',
-      'mixed-prefer-horizontal',
-      'mixed-prefer-vertical',
-    ];
+    let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] } | null = null;
+    let bestScore = -Infinity;
+    let bestStrategy = '';
 
-    const attempts: PlacementAttempt[] = [];
+    for (const strategy of strategies) {
+      const sortedItems = strategy.fn([...flatItems]);
+      const result = this.packItems(sortedItems);
 
-    // Run all strategy combinations
-    for (const sortStrategy of sortStrategies) {
-      for (const orientationMode of orientationModes) {
-        const sortedItems = this.sortItems([...flatItems], sortStrategy);
-        const result = this.runPlacement(sortedItems, orientationMode);
+      // Score: prioritize placing all items, then efficiency
+      const placedRatio = result.placed.length / totalItems;
+      const efficiency = this.calculateEfficiency(result.placed);
+      const score = placedRatio * 10000 + efficiency * 100;
 
-        // Calculate score: prioritize placing all items, then efficiency
-        const placedRatio = result.placed.length / totalItems;
-        const efficiency = this.calculateEfficiency(result.placed);
-        const score = placedRatio * 1000 + efficiency * 100;
+      if (score > bestScore) {
+        bestScore = score;
+        bestResult = result;
+        bestStrategy = strategy.name;
+      }
 
-        attempts.push({
-          sortStrategy,
-          orientationMode,
-          placed: result.placed,
-          unplaced: result.unplaced,
-          score,
-        });
-
-        // Early exit if we placed everything
-        if (result.placed.length === totalItems) {
-          console.log(`✓ Perfect fit found: ${sortStrategy} + ${orientationMode}`);
-        }
+      // Early exit if all items placed
+      if (result.placed.length === totalItems) {
+        console.log(`✓ All ${totalItems} items placed with strategy: ${strategy.name}`);
+        break;
       }
     }
 
-    // Find best attempt
-    attempts.sort((a, b) => b.score - a.score);
-    const best = attempts[0];
-
-    console.log(`Best strategy: ${best.sortStrategy} + ${best.orientationMode}`);
-    console.log(`Placed: ${best.placed.length}/${totalItems}, Efficiency: ${(this.calculateEfficiency(best.placed) * 100).toFixed(1)}%`);
+    console.log(`Best: ${bestStrategy} - Placed ${bestResult!.placed.length}/${totalItems}`);
 
     return {
-      placedCylinders: best.placed,
-      unplacedItems: best.unplaced,
-      statistics: this.calculateStatistics(best.placed, best.unplaced.length),
+      placedCylinders: bestResult!.placed,
+      unplacedItems: bestResult!.unplaced,
+      statistics: this.calculateStatistics(bestResult!.placed, bestResult!.unplaced.length),
     };
   }
 
   /**
-   * Sort items according to strategy
+   * Core packing algorithm - places items one by one in best position
    */
-  private sortItems(items: CargoItem[], strategy: SortStrategy): CargoItem[] {
-    return items.sort((a, b) => {
-      const radiusA = a.dimensions.width / 2;
-      const radiusB = b.dimensions.width / 2;
-      const lengthA = a.dimensions.height;
-      const lengthB = b.dimensions.height;
-      const volumeA = Math.PI * radiusA * radiusA * lengthA;
-      const volumeB = Math.PI * radiusB * radiusB * lengthB;
-      const aspectA = lengthA / (radiusA * 2);
-      const aspectB = lengthB / (radiusB * 2);
-
-      switch (strategy) {
-        case 'volume-desc': return volumeB - volumeA;
-        case 'volume-asc': return volumeA - volumeB;
-        case 'diameter-desc': return radiusB - radiusA;
-        case 'diameter-asc': return radiusA - radiusB;
-        case 'length-desc': return lengthB - lengthA;
-        case 'length-asc': return lengthA - lengthB;
-        case 'aspect-ratio-desc': return aspectB - aspectA;
-        case 'aspect-ratio-asc': return aspectA - aspectB;
-        default: return 0;
-      }
-    });
-  }
-
-  /**
-   * Run placement with a specific orientation mode
-   */
-  private runPlacement(
-    items: CargoItem[],
-    mode: OrientationMode
-  ): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+  private packItems(items: CargoItem[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     const placed: PlacedCylinder[] = [];
     const unplaced: CargoItem[] = [];
 
@@ -185,33 +115,11 @@ export class OptimizedCoilSolver {
       const radius = item.dimensions.width / 2;
       const length = item.dimensions.height;
 
-      // Determine which orientations to try based on mode
-      const orientationsToTry = this.getOrientationsForMode(mode, radius, length);
+      // Find best position trying BOTH orientations
+      const bestPos = this.findBestPosition(radius, length, placed);
 
-      let bestPosition: {
-        x: number;
-        y: number;
-        z: number;
-        orientation: CylinderOrientation;
-        score: number;
-      } | null = null;
-
-      // Try each orientation
-      for (const orientation of orientationsToTry) {
-        const positions = this.generatePositions(radius, length, orientation, placed);
-
-        for (const pos of positions) {
-          if (!this.hasCollision(pos.x, pos.y, pos.z, radius, length, orientation, placed)) {
-            const score = this.calculatePositionScore(pos, orientation);
-            if (!bestPosition || score < bestPosition.score) {
-              bestPosition = { ...pos, orientation, score };
-            }
-          }
-        }
-      }
-
-      if (bestPosition) {
-        placed.push(this.createCylinder(item, bestPosition, radius, length));
+      if (bestPos) {
+        placed.push(this.createPlacedCylinder(item, bestPos, radius, length));
       } else {
         unplaced.push(item);
       }
@@ -221,105 +129,218 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * Get orientations to try based on mode
+   * Find the best position for a cylinder, trying all valid positions and orientations
    */
-  private getOrientationsForMode(
-    mode: OrientationMode,
+  private findBestPosition(
     radius: number,
-    length: number
-  ): CylinderOrientation[] {
-    const diameter = radius * 2;
-    const aspectRatio = length / diameter;
+    length: number,
+    placed: PlacedCylinder[]
+  ): CandidatePosition | null {
+    const candidates: CandidatePosition[] = [];
+    const margin = this.config.wallMargin;
+    const gap = this.config.cylinderMargin;
 
-    switch (mode) {
-      case 'horizontal':
-        return ['horizontal-y'];
-      case 'vertical':
-        // Only vertical if it fits in container height
-        if (length <= this.container.dimensions.height) {
-          return ['vertical'];
+    // Try both orientations
+    const orientations: CylinderOrientation[] = ['horizontal-y', 'vertical'];
+
+    for (const orientation of orientations) {
+      // Check if this orientation fits in container at all
+      if (!this.orientationFits(radius, length, orientation)) {
+        continue;
+      }
+
+      // Generate candidate positions for this orientation
+      const positions = this.generateCandidatePositions(radius, length, orientation, placed, margin, gap);
+
+      for (const pos of positions) {
+        if (this.isValidPosition(pos.x, pos.y, pos.z, radius, length, orientation, placed, gap)) {
+          const score = this.scorePosition(pos.x, pos.y, pos.z, orientation);
+          candidates.push({ x: pos.x, y: pos.y, z: pos.z, orientation, score });
         }
-        return ['horizontal-y']; // Fallback to horizontal
-      case 'mixed-prefer-horizontal':
-        // Try horizontal first, then vertical
-        if (length <= this.container.dimensions.height) {
-          return ['horizontal-y', 'vertical'];
-        }
-        return ['horizontal-y'];
-      case 'mixed-prefer-vertical':
-        // Try vertical first if aspect ratio is low (short cylinders)
-        if (length <= this.container.dimensions.height) {
-          if (aspectRatio < 1.5) {
-            return ['vertical', 'horizontal-y'];
-          }
-          return ['horizontal-y', 'vertical'];
-        }
-        return ['horizontal-y'];
-      default:
-        return ['horizontal-y'];
+      }
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    // Return position with lowest score (best fit)
+    candidates.sort((a, b) => a.score - b.score);
+    return candidates[0];
+  }
+
+  /**
+   * Check if an orientation fits in the container at all
+   */
+  private orientationFits(radius: number, length: number, orientation: CylinderOrientation): boolean {
+    const diameter = radius * 2;
+    const { width, length: containerLength, height } = this.container.dimensions;
+
+    if (orientation === 'horizontal-y') {
+      // Lying along Y axis: needs diameter in X, length in Y, diameter in Z
+      return diameter <= width && length <= containerLength && diameter <= height;
+    } else {
+      // Standing vertical: needs diameter in X, diameter in Y, length in Z
+      return diameter <= width && diameter <= containerLength && length <= height;
     }
   }
 
   /**
-   * Generate candidate positions for a cylinder
+   * Generate all candidate positions for a cylinder
    */
-  private generatePositions(
+  private generateCandidatePositions(
     radius: number,
     length: number,
     orientation: CylinderOrientation,
-    _placed: PlacedCylinder[]
+    placed: PlacedCylinder[],
+    margin: number,
+    gap: number
   ): Array<{ x: number; y: number; z: number }> {
     const positions: Array<{ x: number; y: number; z: number }> = [];
-    const margin = this.config.wallMargin;
     const diameter = radius * 2;
 
     if (orientation === 'horizontal-y') {
-      // Honeycomb positions for horizontal placement
-      const rowHeight = radius * Math.sqrt(3);
-      const yStep = Math.min(length, 50); // Finer Y-step for better packing
+      // Horizontal cylinder: axis along Y
+      // Position = center X, start Y, bottom Z
 
-      for (let y = margin; y + length <= this.container.dimensions.length - margin; y += yStep) {
-        let row = 0;
-        let z = 0;
+      // 1. Floor positions - systematic grid
+      const rowHeight = radius * Math.sqrt(3); // Honeycomb row spacing
 
-        while (z + diameter <= this.container.dimensions.height) {
-          const isOddRow = row % 2 === 1;
-          const xOffset = isOddRow ? radius : 0;
-
-          let x = margin + radius + xOffset;
-          while (x + radius <= this.container.dimensions.width - margin) {
-            positions.push({ x, y, z });
-            x += diameter;
+      // Generate Y positions
+      const yPositions: number[] = [];
+      for (let y = margin; y + length <= this.container.dimensions.length - margin; y += length * 0.5) {
+        yPositions.push(y);
+      }
+      // Also add positions based on existing cylinder ends
+      for (const p of placed) {
+        if (p.orientation === 'horizontal-y') {
+          const endY = p.position.y + p.length + gap;
+          if (endY + length <= this.container.dimensions.length - margin) {
+            yPositions.push(endY);
           }
-
-          row++;
-          z += rowHeight;
         }
       }
-    } else if (orientation === 'vertical') {
-      // Grid positions for vertical placement (hexagonal in XY plane)
+
+      for (const y of [...new Set(yPositions)]) {
+        // Floor level rows (honeycomb pattern)
+        for (let row = 0; row < 20; row++) {
+          const z = row * rowHeight;
+          if (z + diameter > this.container.dimensions.height - margin) break;
+
+          const xOffset = (row % 2 === 1) ? radius : 0;
+
+          for (let x = margin + radius + xOffset; x + radius <= this.container.dimensions.width - margin; x += diameter + gap) {
+            positions.push({ x, y, z });
+          }
+        }
+      }
+
+      // 2. Valley positions - nestle between existing horizontal cylinders
+      for (const p1 of placed) {
+        if (p1.orientation !== 'horizontal-y') continue;
+
+        for (const p2 of placed) {
+          if (p2.orientation !== 'horizontal-y' || p1 === p2) continue;
+
+          // Check if they're on the same Z level and Y overlaps
+          if (Math.abs(p1.position.z - p2.position.z) > gap) continue;
+
+          const yOverlap = Math.min(p1.position.y + p1.length, p2.position.y + p2.length) -
+                          Math.max(p1.position.y, p2.position.y);
+          if (yOverlap < length * 0.5) continue;
+
+          // Calculate valley position
+          const dist = Math.abs(p1.center.x - p2.center.x);
+          const sumRadii = p1.radius + p2.radius;
+
+          if (dist > sumRadii - gap && dist < sumRadii + diameter + gap * 2) {
+            // There's a valley between these two
+            const midX = (p1.center.x + p2.center.x) / 2;
+            const valleyZ = p1.position.z + p1.radius * Math.sqrt(3);
+            const valleyY = Math.max(p1.position.y, p2.position.y);
+
+            if (valleyZ + diameter <= this.container.dimensions.height) {
+              positions.push({ x: midX, y: valleyY, z: valleyZ });
+            }
+          }
+        }
+      }
+
+      // 3. Stacking on top of single horizontal cylinders
+      for (const p of placed) {
+        if (p.orientation !== 'horizontal-y') continue;
+
+        const stackZ = p.position.z + p.radius * 2;
+        if (stackZ + diameter > this.container.dimensions.height) continue;
+
+        // Stack directly on top
+        positions.push({ x: p.center.x, y: p.position.y, z: stackZ });
+      }
+
+    } else {
+      // Vertical cylinder: axis along Z
+      // Position = center X, center Y, bottom Z
+
+      // 1. Floor positions - hexagonal grid
       const rowSpacing = radius * Math.sqrt(3);
 
-      let rowNum = 0;
-      let y = margin + radius;
+      for (let rowNum = 0; rowNum < 50; rowNum++) {
+        const y = margin + radius + rowNum * rowSpacing;
+        if (y + radius > this.container.dimensions.length - margin) break;
 
-      while (y + radius <= this.container.dimensions.length - margin) {
-        const isOddRow = rowNum % 2 === 1;
-        const xOffset = isOddRow ? radius : 0;
+        const xOffset = (rowNum % 2 === 1) ? radius : 0;
 
-        let x = margin + radius + xOffset;
-        while (x + radius <= this.container.dimensions.width - margin) {
+        for (let x = margin + radius + xOffset; x + radius <= this.container.dimensions.width - margin; x += diameter + gap) {
           // Stack vertically
-          let z = 0;
-          while (z + length <= this.container.dimensions.height) {
+          for (let z = 0; z + length <= this.container.dimensions.height; z += length) {
             positions.push({ x, y, z });
-            z += length; // Stack directly on top
           }
-          x += diameter;
         }
+      }
 
-        y += rowSpacing;
-        rowNum++;
+      // 2. Positions on top of vertical cylinders
+      for (const p of placed) {
+        if (p.orientation !== 'vertical') continue;
+
+        const stackZ = p.position.z + p.length;
+        if (stackZ + length > this.container.dimensions.height) continue;
+
+        positions.push({ x: p.center.x, y: p.center.y, z: stackZ });
+      }
+
+      // 3. Valley positions between vertical cylinders (in XY plane)
+      for (const p1 of placed) {
+        if (p1.orientation !== 'vertical') continue;
+
+        for (const p2 of placed) {
+          if (p2.orientation !== 'vertical' || p1 === p2) continue;
+          if (Math.abs(p1.position.z - p2.position.z) > gap) continue;
+
+          const dx = p2.center.x - p1.center.x;
+          const dy = p2.center.y - p1.center.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const sumRadii = p1.radius + p2.radius;
+
+          if (dist > sumRadii + gap && dist < sumRadii + diameter * 2 + gap) {
+            // Find third position forming equilateral arrangement
+            const midX = (p1.center.x + p2.center.x) / 2;
+            const midY = (p1.center.y + p2.center.y) / 2;
+
+            // Perpendicular offset for triangular packing
+            const perpX = -dy / dist * rowSpacing;
+            const perpY = dx / dist * rowSpacing;
+
+            for (const sign of [1, -1]) {
+              const nestX = midX + sign * perpX;
+              const nestY = midY + sign * perpY;
+
+              if (nestX - radius >= margin && nestX + radius <= this.container.dimensions.width - margin &&
+                  nestY - radius >= margin && nestY + radius <= this.container.dimensions.length - margin) {
+                positions.push({ x: nestX, y: nestY, z: p1.position.z });
+              }
+            }
+          }
+        }
       }
     }
 
@@ -327,102 +348,130 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * Check collision with placed cylinders
+   * Check if a position is valid (no collisions, within bounds)
    */
-  private hasCollision(
+  private isValidPosition(
     x: number,
     y: number,
     z: number,
     radius: number,
     length: number,
     orientation: CylinderOrientation,
-    placed: PlacedCylinder[]
+    placed: PlacedCylinder[],
+    gap: number
   ): boolean {
-    const margin = this.config.cylinderMargin;
-
-    for (const p of placed) {
-      if (this.cylindersOverlap(x, y, z, radius, length, orientation, p, margin)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Check if two cylinders overlap
-   */
-  private cylindersOverlap(
-    x: number,
-    y: number,
-    z: number,
-    radius: number,
-    length: number,
-    orientation: CylinderOrientation,
-    placed: PlacedCylinder,
-    margin: number
-  ): boolean {
-    // Get bounding boxes
-    const bb1 = this.getBoundingBox(x, y, z, radius, length, orientation);
-    const bb2 = this.getBoundingBox(
-      placed.center.x,
-      placed.center.y,
-      placed.position.z,
-      placed.radius,
-      placed.length,
-      placed.orientation
-    );
-
-    // Quick AABB check
-    if (
-      bb1.maxX <= bb2.minX + margin ||
-      bb1.minX >= bb2.maxX - margin ||
-      bb1.maxY <= bb2.minY + margin ||
-      bb1.minY >= bb2.maxY - margin ||
-      bb1.maxZ <= bb2.minZ + margin ||
-      bb1.minZ >= bb2.maxZ - margin
-    ) {
+    // Bounds check
+    if (!this.isWithinBounds(x, y, z, radius, length, orientation)) {
       return false;
     }
 
-    // Precise check for same orientation
-    if (orientation === placed.orientation) {
-      if (orientation === 'horizontal-y') {
-        // Check Y overlap
-        const y1Min = y;
-        const y1Max = y + length;
-        const y2Min = placed.position.y;
-        const y2Max = placed.position.y + placed.length;
-
-        if (y1Max <= y2Min + margin || y1Min >= y2Max - margin) {
-          return false;
-        }
-
-        // Circle overlap in XZ
-        const c1z = z + radius;
-        const c2z = placed.position.z + placed.radius;
-        const dist = Math.sqrt(Math.pow(x - placed.center.x, 2) + Math.pow(c1z - c2z, 2));
-        return dist < radius + placed.radius - margin;
-      } else if (orientation === 'vertical') {
-        // Check Z overlap
-        const z1Max = z + length;
-        const z2Max = placed.position.z + placed.length;
-
-        if (z1Max <= placed.position.z + margin || z >= z2Max - margin) {
-          return false;
-        }
-
-        // Circle overlap in XY
-        const dist = Math.sqrt(Math.pow(x - placed.center.x, 2) + Math.pow(y - placed.center.y, 2));
-        return dist < radius + placed.radius - margin;
+    // Collision check with all placed cylinders
+    for (const p of placed) {
+      if (this.cylindersCollide(x, y, z, radius, length, orientation, p, gap)) {
+        return false;
       }
     }
 
-    // Different orientations - AABB already confirmed overlap
     return true;
   }
 
   /**
-   * Get bounding box for a cylinder
+   * Check if cylinder is within container bounds
+   */
+  private isWithinBounds(
+    x: number,
+    y: number,
+    z: number,
+    radius: number,
+    length: number,
+    orientation: CylinderOrientation
+  ): boolean {
+    const margin = this.config.wallMargin;
+    const { width, length: containerLength, height } = this.container.dimensions;
+    const diameter = radius * 2;
+
+    if (orientation === 'horizontal-y') {
+      // Horizontal: center X, start Y, bottom Z
+      return x - radius >= margin &&
+             x + radius <= width - margin &&
+             y >= margin &&
+             y + length <= containerLength - margin &&
+             z >= 0 &&
+             z + diameter <= height;
+    } else {
+      // Vertical: center X, center Y, bottom Z
+      return x - radius >= margin &&
+             x + radius <= width - margin &&
+             y - radius >= margin &&
+             y + radius <= containerLength - margin &&
+             z >= 0 &&
+             z + length <= height;
+    }
+  }
+
+  /**
+   * Check if two cylinders collide
+   */
+  private cylindersCollide(
+    x: number,
+    y: number,
+    z: number,
+    radius: number,
+    length: number,
+    orientation: CylinderOrientation,
+    other: PlacedCylinder,
+    gap: number
+  ): boolean {
+    const minDist = radius + other.radius + gap;
+
+    if (orientation === 'horizontal-y' && other.orientation === 'horizontal-y') {
+      // Both horizontal along Y
+      // Check Y overlap first
+      const y1Start = y, y1End = y + length;
+      const y2Start = other.position.y, y2End = other.position.y + other.length;
+
+      if (y1End <= y2Start || y1Start >= y2End) {
+        return false; // No Y overlap
+      }
+
+      // Check circle collision in XZ plane
+      const c1z = z + radius;
+      const c2z = other.position.z + other.radius;
+      const dist = Math.sqrt(Math.pow(x - other.center.x, 2) + Math.pow(c1z - c2z, 2));
+
+      return dist < minDist;
+
+    } else if (orientation === 'vertical' && other.orientation === 'vertical') {
+      // Both vertical along Z
+      // Check Z overlap first
+      const z1End = z + length;
+      const z2End = other.position.z + other.length;
+
+      if (z1End <= other.position.z || z >= z2End) {
+        return false; // No Z overlap
+      }
+
+      // Check circle collision in XY plane
+      const dist = Math.sqrt(Math.pow(x - other.center.x, 2) + Math.pow(y - other.center.y, 2));
+
+      return dist < minDist;
+
+    } else {
+      // Mixed orientations - use AABB for simplicity
+      const bb1 = this.getBoundingBox(x, y, z, radius, length, orientation);
+      const bb2 = this.getPlacedBoundingBox(other);
+
+      return !(bb1.maxX <= bb2.minX + gap ||
+               bb1.minX >= bb2.maxX - gap ||
+               bb1.maxY <= bb2.minY + gap ||
+               bb1.minY >= bb2.maxY - gap ||
+               bb1.maxZ <= bb2.minZ + gap ||
+               bb1.minZ >= bb2.maxZ - gap);
+    }
+  }
+
+  /**
+   * Get bounding box for a cylinder being placed
    */
   private getBoundingBox(
     x: number,
@@ -434,54 +483,72 @@ export class OptimizedCoilSolver {
   ): { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } {
     const diameter = radius * 2;
 
-    switch (orientation) {
-      case 'horizontal-y':
-        return {
-          minX: x - radius,
-          maxX: x + radius,
-          minY: y,
-          maxY: y + length,
-          minZ: z,
-          maxZ: z + diameter,
-        };
-      case 'vertical':
-        return {
-          minX: x - radius,
-          maxX: x + radius,
-          minY: y - radius,
-          maxY: y + radius,
-          minZ: z,
-          maxZ: z + length,
-        };
-      case 'horizontal-x':
-        return {
-          minX: x - length / 2,
-          maxX: x + length / 2,
-          minY: y - radius,
-          maxY: y + radius,
-          minZ: z,
-          maxZ: z + diameter,
-        };
+    if (orientation === 'horizontal-y') {
+      return {
+        minX: x - radius, maxX: x + radius,
+        minY: y, maxY: y + length,
+        minZ: z, maxZ: z + diameter,
+      };
+    } else {
+      return {
+        minX: x - radius, maxX: x + radius,
+        minY: y - radius, maxY: y + radius,
+        minZ: z, maxZ: z + length,
+      };
     }
   }
 
   /**
-   * Calculate position score (lower is better)
+   * Get bounding box for an already-placed cylinder
    */
-  private calculatePositionScore(
-    pos: { x: number; y: number; z: number },
-    _orientation: CylinderOrientation
-  ): number {
-    // Prioritize: back of container (Y) -> bottom (Z) -> left (X)
-    return pos.y * 100000 + pos.z * 1000 + pos.x;
+  private getPlacedBoundingBox(p: PlacedCylinder): { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } {
+    const diameter = p.radius * 2;
+
+    if (p.orientation === 'horizontal-y') {
+      return {
+        minX: p.center.x - p.radius, maxX: p.center.x + p.radius,
+        minY: p.position.y, maxY: p.position.y + p.length,
+        minZ: p.position.z, maxZ: p.position.z + diameter,
+      };
+    } else {
+      return {
+        minX: p.center.x - p.radius, maxX: p.center.x + p.radius,
+        minY: p.center.y - p.radius, maxY: p.center.y + p.radius,
+        minZ: p.position.z, maxZ: p.position.z + p.length,
+      };
+    }
   }
 
   /**
-   * Create a placed cylinder
+   * Score a position - lower is better
+   * Prioritize: filling from back (low Y), bottom (low Z), left (low X)
    */
-  private createCylinder(
+  private scorePosition(x: number, y: number, z: number, orientation: CylinderOrientation): number {
+    // Normalize to container dimensions
+    const normY = y / this.container.dimensions.length;
+    const normZ = z / this.container.dimensions.height;
+    const normX = x / this.container.dimensions.width;
+
+    // Horizontal cylinders: prioritize filling depth (Y), then height (Z), then width (X)
+    // Vertical cylinders: same priority
+
+    // Weight Y most heavily to fill from back to front
+    // Then Z to fill from bottom to top
+    // Then X to fill from left to right
+
+    if (orientation === 'horizontal-y') {
+      return normY * 10000 + normZ * 100 + normX;
+    } else {
+      return normY * 10000 + normZ * 100 + normX;
+    }
+  }
+
+  /**
+   * Create a PlacedCylinder object
+   */
+  private createPlacedCylinder(
     item: CargoItem,
-    pos: { x: number; y: number; z: number; orientation: CylinderOrientation },
+    pos: CandidatePosition,
     radius: number,
     length: number
   ): PlacedCylinder {
@@ -489,14 +556,13 @@ export class OptimizedCoilSolver {
     let centerPos: { x: number; y: number; z: number };
 
     if (pos.orientation === 'horizontal-y') {
+      // Horizontal: x is center, y is start, z is bottom
       cornerPos = { x: pos.x - radius, y: pos.y, z: pos.z };
-      centerPos = { x: pos.x, y: pos.y + length / 2, z: pos.z };
-    } else if (pos.orientation === 'vertical') {
-      cornerPos = { x: pos.x - radius, y: pos.y - radius, z: pos.z };
-      centerPos = { x: pos.x, y: pos.y, z: pos.z };
+      centerPos = { x: pos.x, y: pos.y + length / 2, z: pos.z + radius };
     } else {
-      cornerPos = { x: pos.x - length / 2, y: pos.y - radius, z: pos.z };
-      centerPos = { x: pos.x, y: pos.y, z: pos.z };
+      // Vertical: x is center, y is center, z is bottom
+      cornerPos = { x: pos.x - radius, y: pos.y - radius, z: pos.z };
+      centerPos = { x: pos.x, y: pos.y, z: pos.z + length / 2 };
     }
 
     return {
@@ -513,34 +579,65 @@ export class OptimizedCoilSolver {
     };
   }
 
+  // Sorting functions
+  private sortByVolumeDesc(items: CargoItem[]): CargoItem[] {
+    return items.sort((a, b) => {
+      const volA = Math.PI * Math.pow(a.dimensions.width / 2, 2) * a.dimensions.height;
+      const volB = Math.PI * Math.pow(b.dimensions.width / 2, 2) * b.dimensions.height;
+      return volB - volA;
+    });
+  }
+
+  private sortByVolumeAsc(items: CargoItem[]): CargoItem[] {
+    return items.sort((a, b) => {
+      const volA = Math.PI * Math.pow(a.dimensions.width / 2, 2) * a.dimensions.height;
+      const volB = Math.PI * Math.pow(b.dimensions.width / 2, 2) * b.dimensions.height;
+      return volA - volB;
+    });
+  }
+
+  private sortByDiameterDesc(items: CargoItem[]): CargoItem[] {
+    return items.sort((a, b) => b.dimensions.width - a.dimensions.width);
+  }
+
+  private sortByLengthDesc(items: CargoItem[]): CargoItem[] {
+    return items.sort((a, b) => b.dimensions.height - a.dimensions.height);
+  }
+
+  private sortMixed(items: CargoItem[]): CargoItem[] {
+    // Group by similar dimensions, then sort by volume
+    return items.sort((a, b) => {
+      const diamA = a.dimensions.width;
+      const diamB = b.dimensions.width;
+      // Group by diameter first (within 10% tolerance)
+      if (Math.abs(diamA - diamB) > diamA * 0.1) {
+        return diamB - diamA;
+      }
+      // Then by length
+      return b.dimensions.height - a.dimensions.height;
+    });
+  }
+
   /**
-   * Calculate volume efficiency
+   * Calculate packing efficiency
    */
   private calculateEfficiency(placed: PlacedCylinder[]): number {
     if (placed.length === 0) return 0;
 
-    let totalVolume = 0;
+    let totalCylinderVolume = 0;
     let maxX = 0, maxY = 0, maxZ = 0;
 
     for (const cyl of placed) {
-      totalVolume += Math.PI * cyl.radius * cyl.radius * cyl.length;
+      totalCylinderVolume += Math.PI * cyl.radius * cyl.radius * cyl.length;
 
-      const bb = this.getBoundingBox(
-        cyl.center.x,
-        cyl.orientation === 'horizontal-y' ? cyl.position.y : cyl.center.y,
-        cyl.position.z,
-        cyl.radius,
-        cyl.length,
-        cyl.orientation
-      );
-
+      const bb = this.getPlacedBoundingBox(cyl);
       maxX = Math.max(maxX, bb.maxX);
       maxY = Math.max(maxY, bb.maxY);
       maxZ = Math.max(maxZ, bb.maxZ);
     }
 
-    const boundingVolume = maxX * maxY * maxZ;
-    return boundingVolume > 0 ? totalVolume / boundingVolume : 0;
+    const usedVolume = maxX * maxY * maxZ;
+    return usedVolume > 0 ? totalCylinderVolume / usedVolume : 0;
   }
 
   /**
@@ -548,6 +645,7 @@ export class OptimizedCoilSolver {
    */
   private calculateStatistics(placed: PlacedCylinder[], failedCount: number): PackingStatistics {
     const efficiency = this.calculateEfficiency(placed);
+
     let totalVolume = 0;
     let maxX = 0, maxY = 0, maxZ = 0;
     const layers = new Set<number>();
@@ -556,15 +654,7 @@ export class OptimizedCoilSolver {
       totalVolume += Math.PI * cyl.radius * cyl.radius * cyl.length;
       layers.add(cyl.layerId);
 
-      const bb = this.getBoundingBox(
-        cyl.center.x,
-        cyl.orientation === 'horizontal-y' ? cyl.position.y : cyl.center.y,
-        cyl.position.z,
-        cyl.radius,
-        cyl.length,
-        cyl.orientation
-      );
-
+      const bb = this.getPlacedBoundingBox(cyl);
       maxX = Math.max(maxX, bb.maxX);
       maxY = Math.max(maxY, bb.maxY);
       maxZ = Math.max(maxZ, bb.maxZ);
