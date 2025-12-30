@@ -3,6 +3,11 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { Container, PlacedItem, CargoItem } from '../common/types';
 
+interface UnplacedSummary {
+  name: string;
+  count: number;
+}
+
 interface ReportData {
   container: Container;
   stats: {
@@ -11,9 +16,11 @@ interface ReportData {
     fillRate: number;
     placedCount: number;
     totalCount: number;
+    unplacedCount?: number;
   };
   cargoList: CargoItem[]; // Yüklenemeyenleri bulmak için
   resultItems: PlacedItem[];
+  unplacedSummary?: UnplacedSummary[];
   screenshotUrl?: string; // 3D sahnenin resmi
 }
 
@@ -80,6 +87,28 @@ export class ExportManager {
       showHead: 'never',
       columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
     });
+
+    // --- 2.5 YÜKLENEMEYENler (Eğer varsa) ---
+    if (data.unplacedSummary && data.unplacedSummary.length > 0) {
+      const unplacedY = (doc as any).lastAutoTable.finalY + 10;
+      doc.setFontSize(12);
+      doc.setTextColor(180, 0, 0);
+      doc.text('Yüklenemeyenler:', 14, unplacedY);
+
+      const unplacedData = data.unplacedSummary.map((item) => [
+        `${item.count}x ${item.name}`,
+      ]);
+
+      autoTable(doc, {
+        startY: unplacedY + 3,
+        body: unplacedData,
+        theme: 'plain',
+        showHead: 'never',
+        styles: { fontSize: 9, textColor: [180, 0, 0] },
+      });
+
+      doc.setTextColor(0);
+    }
 
     // --- 3. GÖRSEL (SCREENSHOT) ---
     // Eğer resim verisi geldiyse sayfaya ekle

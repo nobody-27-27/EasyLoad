@@ -10,10 +10,16 @@ import type {
 import { CONTAINER_PRESETS } from './core/common/constants';
 import { MixedSolver } from './core/solvers/mixed-solver/orchestrator';
 
+interface UnplacedSummary {
+  name: string;
+  count: number;
+}
+
 interface AppState {
   container: Container;
   cargoList: CargoItem[];
   resultItems: PlacedItem[];
+  unplacedSummary: UnplacedSummary[];
   isCalculating: boolean;
 
   // --- YENİ EKLENEN İSTATİSTİKLER ---
@@ -23,6 +29,7 @@ interface AppState {
     fillRate: number; // Doluluk Oranı (%)
     placedCount: number; // Yerleşen Adet
     totalCount: number; // Toplam Adet
+    unplacedCount: number; // Yerleşmeyen Adet
   };
 
   setContainer: (type: string, customDims?: Dimensions) => void;
@@ -37,6 +44,7 @@ export const useStore = create<AppState>((set, get) => ({
   container: CONTAINER_PRESETS['TRUCK'],
   cargoList: [],
   resultItems: [],
+  unplacedSummary: [],
   isCalculating: false,
 
   // Başlangıç istatistikleri (Boş)
@@ -46,6 +54,7 @@ export const useStore = create<AppState>((set, get) => ({
     fillRate: 0,
     placedCount: 0,
     totalCount: 0,
+    unplacedCount: 0,
   },
 
   setContainer: (type, customDims) => {
@@ -86,7 +95,7 @@ export const useStore = create<AppState>((set, get) => ({
     setTimeout(() => {
       try {
         const solver = new MixedSolver(container);
-        const results = solver.solve(cargoList);
+        const { placedItems } = solver.solveWithReport(cargoList);
 
         // --- İSTATİSTİK HESAPLAMA ---
         // 1. Konteyner Hacmi (cm3 -> m3 dönüşümü için 1.000.000'a bölüyoruz)
@@ -98,11 +107,17 @@ export const useStore = create<AppState>((set, get) => ({
 
         // 2. Yüklenenlerin Hacmi
         let usedVol = 0;
-        results.forEach((item) => {
-          usedVol +=
-            item.dimensions.width *
-            item.dimensions.length *
-            item.dimensions.height;
+        placedItems.forEach((item) => {
+          if (item.type === 'cylinder') {
+            // Silindir hacmi: π * r² * h
+            const r = item.dimensions.width / 2;
+            usedVol += Math.PI * r * r * item.dimensions.height;
+          } else {
+            usedVol +=
+              item.dimensions.width *
+              item.dimensions.length *
+              item.dimensions.height;
+          }
         });
         usedVol = usedVol / 1_000_000; // m3
 
@@ -115,15 +130,45 @@ export const useStore = create<AppState>((set, get) => ({
           0
         );
 
+        // 5. Yerleşmeyen yükleri grupla
+        const unplacedMap = new Map<string, number>();
+        const unplacedCount = totalQty - placedItems.length;
+
+        // CargoList'ten yerleşmeyenleri bul
+        const placedByName = new Map<string, number>();
+        placedItems.forEach((item) => {
+          const key = item.name;
+          placedByName.set(key, (placedByName.get(key) || 0) + 1);
+        });
+
+        cargoList.forEach((cargo) => {
+          const placedOfThis = placedByName.get(cargo.name) || 0;
+          const unplacedOfThis = cargo.quantity - placedOfThis;
+          if (unplacedOfThis > 0) {
+            unplacedMap.set(cargo.name, unplacedOfThis);
+          }
+          // Adjust for next same-named cargo
+          if (placedOfThis > 0) {
+            placedByName.set(cargo.name, Math.max(0, placedOfThis - cargo.quantity));
+          }
+        });
+
+        const unplacedSummary = Array.from(unplacedMap.entries()).map(([name, count]) => ({
+          name,
+          count,
+        }));
+
         set({
-          resultItems: results,
+          resultItems: placedItems,
+          unplacedSummary,
           isCalculating: false,
           stats: {
             totalVolume: Number(contVol.toFixed(2)),
             usedVolume: Number(usedVol.toFixed(2)),
             fillRate: Number(rate.toFixed(2)),
-            placedCount: results.length,
+            placedCount: placedItems.length,
             totalCount: totalQty,
+            unplacedCount,
           },
         });
       } catch (e) {
@@ -141,12 +186,14 @@ export const useStore = create<AppState>((set, get) => ({
       cargoList: data.cargoList || [],
       // Sonuçları ve istatistikleri sıfırla ki tekrar hesaplansın (veya onları da yükleyebilirsin)
       resultItems: [],
+      unplacedSummary: [],
       stats: {
         totalVolume: 0,
         usedVolume: 0,
         fillRate: 0,
         placedCount: 0,
         totalCount: 0,
+        unplacedCount: 0,
       },
       isCalculating: false,
     });
