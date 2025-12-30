@@ -8,14 +8,19 @@
  * - Horizontal stacking (honeycomb packing - like logs)
  * - Mixed orientation strategies
  * - Valley/nesting optimization for space efficiency
+ * - Multi-strategy optimization (tries 32 combinations)
  *
  * Architecture:
- * - CoilSolver: Main orchestrator
+ * - OptimizedCoilSolver: Best solver - tries multiple strategies
+ * - CoilSolver: Basic orchestrator
  * - VerticalStacker: Handles upright cylinder placement
  * - HorizontalStacker: Handles lying cylinder placement
  * - ValleyManager: Manages 3D pocket detection between cylinders
  * - CylinderGeometry: Pure math utilities for cylinder calculations
  */
+
+// Optimized solver (recommended)
+export { OptimizedCoilSolver } from './optimized-solver';
 
 // Main solver
 export { CoilSolver, type OrientationStrategy } from './coil-solver';

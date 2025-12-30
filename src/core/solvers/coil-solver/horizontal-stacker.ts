@@ -8,17 +8,16 @@ import type {
   CylinderLayer,
 } from './types';
 import { ORIENTATION_ROTATIONS } from './types';
-import { ValleyManager } from './valley-manager';
-import { CylinderGeometry, type Circle2D } from '../../math/cylinder-math/cylinder-geometry';
 
 /**
  * HorizontalStacker handles the placement of cylinders in horizontal (lying) orientation.
  * Think of logs stacked in a pile - this is "honeycomb/hexagonal" packing strategy.
  *
  * Strategy:
- * 1. Place first row of cylinders on the floor, touching each other
+ * 1. Place first row of cylinders on the floor along X-axis
  * 2. Second row nestles in the valleys between first row cylinders
  * 3. Continue alternating pattern up to container height
+ * 4. When XZ cross-section is full, advance along Y-axis
  *
  * Physical Model:
  * - Cylinders lie horizontally (axis along Y/depth)
@@ -29,16 +28,12 @@ import { CylinderGeometry, type Circle2D } from '../../math/cylinder-math/cylind
 export class HorizontalStacker {
   private container: Container;
   private config: CoilSolverConfig;
-  private valleyManager: ValleyManager;
+  private placedCylinders: PlacedCylinder[] = [];
   private layers: CylinderLayer[] = [];
-
-  // Track XZ positions for honeycomb calculation
-  private xzCircles: Map<number, Circle2D[]> = new Map(); // layerId -> circles
 
   constructor(container: Container, config: CoilSolverConfig) {
     this.container = container;
     this.config = config;
-    this.valleyManager = new ValleyManager(container, config);
   }
 
   /**
@@ -49,18 +44,18 @@ export class HorizontalStacker {
     placed: PlacedCylinder[];
     unplaced: CargoItem[];
   } {
-    this.valleyManager.clear();
+    this.placedCylinders = [];
     this.layers = [];
-    this.xzCircles.clear();
 
     const placed: PlacedCylinder[] = [];
     const unplaced: CargoItem[] = [];
 
-    // Sort items by volume (largest first) - Best Fit Decreasing
+    // Sort items by diameter (largest first) for better packing
+    // Then by length (longest first) to group similar lengths
     const sortedItems = [...items].sort((a, b) => {
-      const volA = Math.PI * Math.pow(a.dimensions.width / 2, 2) * a.dimensions.height;
-      const volB = Math.PI * Math.pow(b.dimensions.width / 2, 2) * b.dimensions.height;
-      return volB - volA;
+      const diamDiff = b.dimensions.width - a.dimensions.width;
+      if (Math.abs(diamDiff) > 1) return diamDiff;
+      return b.dimensions.height - a.dimensions.height;
     });
 
     // Flatten quantity into individual items
@@ -78,9 +73,8 @@ export class HorizontalStacker {
       if (placement) {
         const cylinder = this.createPlacedCylinder(item, placement);
         placed.push(cylinder);
-        this.valleyManager.addCylinder(cylinder);
+        this.placedCylinders.push(cylinder);
         this.updateLayers(cylinder);
-        this.updateXZCircles(cylinder);
       } else {
         unplaced.push(item);
       }
@@ -90,227 +84,76 @@ export class HorizontalStacker {
   }
 
   /**
-   * Find the best placement for a single item
+   * Find the best placement for a single item using systematic search
    */
   private findBestPlacement(item: CargoItem): PlacementCandidate | null {
     const radius = item.dimensions.width / 2;
     const length = item.dimensions.height;
+    const diameter = radius * 2;
+    const margin = this.config.wallMargin;
 
-    // Collect all candidate positions
+    // Generate all possible honeycomb positions systematically
     const candidates: PlacementCandidate[] = [];
 
-    // 1. Try floor positions first
-    const floorCandidates = this.findFloorPositions(radius, length);
-    candidates.push(...floorCandidates);
+    // Honeycomb row parameters
+    const rowHeight = radius * Math.sqrt(3); // Vertical spacing between honeycomb rows
 
-    // 2. Try honeycomb nesting positions (valleys in XZ plane)
-    const honeycombCandidates = this.findHoneycombPositions(radius, length);
-    candidates.push(...honeycombCandidates);
+    // Scan through Y-slices (depth)
+    const yStep = length; // Each Y-slice is one cylinder length
 
-    // 3. Try stacking directly on top
-    if (item.stackable) {
-      const stackingCandidates = this.valleyManager.findStackingPositions(
-        radius,
-        length,
-        'horizontal-y'
-      );
-      candidates.push(...stackingCandidates);
+    for (let yStart = margin; yStart + length <= this.container.dimensions.length - margin; yStart += yStep) {
+      // For each Y-slice, generate honeycomb positions in XZ plane
+      let row = 0;
+      let z = 0; // Base Z for this row
+
+      while (z + diameter <= this.container.dimensions.height) {
+        const isOddRow = row % 2 === 1;
+        const xOffset = isOddRow ? radius : 0; // Honeycomb offset for odd rows
+
+        // Scan across width (X-axis)
+        let x = margin + radius + xOffset;
+
+        while (x + radius <= this.container.dimensions.width - margin) {
+          const centerX = x;
+          const centerY = yStart + length / 2;
+          const cornerZ = z;
+
+          // Check if position is valid (no collision)
+          if (!this.hasCollisionAt(centerX, centerY, cornerZ, radius, length)) {
+            const cornerPos = {
+              x: centerX - radius,
+              y: yStart,
+              z: cornerZ,
+            };
+            const centerPos = {
+              x: centerX,
+              y: centerY,
+              z: cornerZ,
+            };
+
+            const score = this.calculateScore(cornerPos);
+            candidates.push({
+              position: cornerPos,
+              center: centerPos,
+              orientation: 'horizontal-y',
+              score,
+              supportType: row === 0 ? 'floor' : 'nested',
+              supportingIds: [],
+            });
+          }
+
+          x += diameter; // Move to next X position
+        }
+
+        // Move to next honeycomb row
+        row++;
+        z += rowHeight;
+      }
     }
 
-    // Sort by score and return best
+    // Sort by score (lower is better) and return best
     candidates.sort((a, b) => a.score - b.score);
     return candidates.length > 0 ? candidates[0] : null;
-  }
-
-  /**
-   * Find floor positions for horizontal cylinders
-   * Uses tight packing along X axis
-   */
-  private findFloorPositions(radius: number, length: number): PlacementCandidate[] {
-    const candidates: PlacementCandidate[] = [];
-    const diameter = radius * 2;
-    const margin = this.config.wallMargin;
-
-    // For horizontal-Y orientation: cylinder runs along Y axis
-    // XZ plane is the cross-section
-
-    // Find existing floor cylinders to pack against
-    const floorCylinders = this.valleyManager.getPlacedCylinders().filter(
-      (c) => c.orientation === 'horizontal-y' && c.position.z < diameter
-    );
-
-    if (floorCylinders.length === 0) {
-      // First cylinder: place at the start
-      const x = margin + radius;
-      const y = margin;
-      const z = 0;
-
-      if (
-        x + radius <= this.container.dimensions.width - margin &&
-        y + length <= this.container.dimensions.length - margin &&
-        z + diameter <= this.container.dimensions.height
-      ) {
-        const cornerPos = { x: x - radius, y, z };
-        const centerPos = { x, y: y + length / 2, z };
-
-        candidates.push({
-          position: cornerPos,
-          center: centerPos,
-          orientation: 'horizontal-y',
-          score: this.calculateScore(cornerPos),
-          supportType: 'floor',
-          supportingIds: [],
-        });
-      }
-    } else {
-      // Pack next to existing floor cylinders
-      // Find the rightmost floor cylinder
-      let maxX = margin;
-      for (const cyl of floorCylinders) {
-        const cylMaxX = cyl.center.x + cyl.radius;
-        if (cylMaxX > maxX) {
-          maxX = cylMaxX;
-        }
-      }
-
-      // Place next to it
-      const x = maxX + radius + this.config.cylinderMargin;
-      const y = margin;
-      const z = 0;
-
-      if (
-        x + radius <= this.container.dimensions.width - margin &&
-        y + length <= this.container.dimensions.length - margin &&
-        z + diameter <= this.container.dimensions.height
-      ) {
-        // Check collision
-        if (!this.hasCollisionAt(x, y + length / 2, z, radius, length)) {
-          const cornerPos = { x: x - radius, y, z };
-          const centerPos = { x, y: y + length / 2, z };
-
-          candidates.push({
-            position: cornerPos,
-            center: centerPos,
-            orientation: 'horizontal-y',
-            score: this.calculateScore(cornerPos),
-            supportType: 'floor',
-            supportingIds: [],
-          });
-        }
-      }
-    }
-
-    return candidates;
-  }
-
-  /**
-   * Find honeycomb positions by looking at XZ plane cross-sections
-   * This is where the magic happens - finding valleys between cylinders
-   */
-  private findHoneycombPositions(radius: number, length: number): PlacementCandidate[] {
-    const candidates: PlacementCandidate[] = [];
-    const margin = this.config.wallMargin;
-    const diameter = radius * 2;
-
-    // Get all horizontal cylinders
-    const horizontalCylinders = this.valleyManager.getPlacedCylinders().filter(
-      (c) => c.orientation === 'horizontal-y'
-    );
-
-    if (horizontalCylinders.length < 2) {
-      return candidates;
-    }
-
-    // Group cylinders by their Y range overlap potential
-    // We need cylinders that overlap in Y to form a valid valley
-
-    // For each pair of cylinders, check if they can support a new one
-    for (let i = 0; i < horizontalCylinders.length; i++) {
-      for (let j = i + 1; j < horizontalCylinders.length; j++) {
-        const cyl1 = horizontalCylinders[i];
-        const cyl2 = horizontalCylinders[j];
-
-        // Check Y overlap
-        const y1Min = cyl1.position.y;
-        const y1Max = cyl1.position.y + cyl1.length;
-        const y2Min = cyl2.position.y;
-        const y2Max = cyl2.position.y + cyl2.length;
-
-        const overlapMin = Math.max(y1Min, y2Min);
-        const overlapMax = Math.min(y1Max, y2Max);
-
-        // Need enough overlap for the new cylinder
-        if (overlapMax - overlapMin < length - this.config.cylinderMargin) {
-          continue;
-        }
-
-        // Get XZ circles
-        const circle1: Circle2D = {
-          x: cyl1.center.x,
-          z: cyl1.center.z + cyl1.radius, // Center of circle in XZ
-          radius: cyl1.radius,
-        };
-
-        const circle2: Circle2D = {
-          x: cyl2.center.x,
-          z: cyl2.center.z + cyl2.radius,
-          radius: cyl2.radius,
-        };
-
-        // Check height compatibility (circles should be at similar Z)
-        const zDiff = Math.abs(circle1.z - circle2.z);
-        if (zDiff > (cyl1.radius + cyl2.radius) * 1.2) {
-          continue;
-        }
-
-        // Calculate nest position
-        const nestPos = CylinderGeometry.calculateNestPosition(circle1, circle2, radius);
-        if (!nestPos) {
-          continue;
-        }
-
-        // The nestPos.z is the center of the new circle in XZ plane
-        // The actual Z position of the cylinder bottom is nestPos.z - radius
-        const newZ = nestPos.z - radius;
-
-        // Validate bounds
-        if (nestPos.x - radius < margin) continue;
-        if (nestPos.x + radius > this.container.dimensions.width - margin) continue;
-        if (newZ < 0) continue;
-        if (newZ + diameter > this.container.dimensions.height) continue;
-
-        // Y position: center of overlap
-        const yPos = (overlapMin + overlapMax) / 2;
-
-        // Check collision
-        if (this.hasCollisionAt(nestPos.x, yPos, newZ, radius, length)) {
-          continue;
-        }
-
-        const cornerPos = {
-          x: nestPos.x - radius,
-          y: yPos - length / 2,
-          z: newZ,
-        };
-
-        const centerPos = {
-          x: nestPos.x,
-          y: yPos,
-          z: newZ,
-        };
-
-        candidates.push({
-          position: cornerPos,
-          center: centerPos,
-          orientation: 'horizontal-y',
-          score: this.calculateScore(cornerPos),
-          supportType: 'nested',
-          supportingIds: [cyl1.uniqueId, cyl2.uniqueId],
-        });
-      }
-    }
-
-    return candidates;
   }
 
   /**
@@ -324,10 +167,9 @@ export class HorizontalStacker {
     length: number
   ): boolean {
     const margin = this.config.cylinderMargin;
-    const placed = this.valleyManager.getPlacedCylinders();
 
-    for (const p of placed) {
-      if (this.cylindersOverlap(cx, cy, cz, radius, length, p, margin)) {
+    for (const placed of this.placedCylinders) {
+      if (this.cylindersOverlap(cx, cy, cz, radius, length, placed, margin)) {
         return true;
       }
     }
@@ -337,6 +179,7 @@ export class HorizontalStacker {
 
   /**
    * Check overlap between new cylinder and placed cylinder
+   * Uses precise circular geometry for same-orientation cylinders
    */
   private cylindersOverlap(
     cx: number,
@@ -353,28 +196,42 @@ export class HorizontalStacker {
     const y2Min = placed.position.y;
     const y2Max = placed.position.y + placed.length;
 
+    // No Y overlap means no collision
     if (y1Max <= y2Min + margin || y1Min >= y2Max - margin) {
       return false;
     }
 
-    // Check XZ circle overlap
+    // Check XZ circle overlap (cross-section view)
     if (placed.orientation === 'horizontal-y') {
+      // Circle centers in XZ plane
+      const c1x = cx;
+      const c1z = cz + radius; // Center of circle
+      const c2x = placed.center.x;
+      const c2z = placed.center.z + placed.radius;
+
       const dist = Math.sqrt(
-        Math.pow(cx - placed.center.x, 2) +
-        Math.pow((cz + radius) - (placed.center.z + placed.radius), 2)
+        Math.pow(c1x - c2x, 2) + Math.pow(c1z - c2z, 2)
       );
       return dist < radius + placed.radius - margin;
     }
 
     // For mixed orientations, use AABB
     const diameter = radius * 2;
-    const x1 = cx - radius;
+    const x1Min = cx - radius;
+    const x1Max = cx + radius;
+    const z1Min = cz;
+    const z1Max = cz + diameter;
+
+    const x2Min = placed.position.x;
+    const x2Max = placed.position.x + placed.radius * 2;
+    const z2Min = placed.position.z;
+    const z2Max = placed.position.z + placed.radius * 2;
 
     const noOverlap =
-      x1 + diameter <= placed.position.x + margin ||
-      x1 >= placed.position.x + placed.radius * 2 - margin ||
-      cz + diameter <= placed.position.z + margin ||
-      cz >= placed.position.z + placed.radius * 2 - margin;
+      x1Max <= x2Min + margin ||
+      x1Min >= x2Max - margin ||
+      z1Max <= z2Min + margin ||
+      z1Min >= z2Max - margin;
 
     return !noOverlap;
   }
@@ -423,38 +280,20 @@ export class HorizontalStacker {
   }
 
   /**
-   * Update XZ circles for honeycomb calculation
-   */
-  private updateXZCircles(cylinder: PlacedCylinder): void {
-    const layerId = cylinder.layerId;
-    if (!this.xzCircles.has(layerId)) {
-      this.xzCircles.set(layerId, []);
-    }
-
-    this.xzCircles.get(layerId)!.push({
-      x: cylinder.center.x,
-      z: cylinder.center.z + cylinder.radius,
-      radius: cylinder.radius,
-    });
-  }
-
-  /**
    * Get or create layer ID for a Z position
    */
   private getLayerIdForZ(z: number): number {
-    // Find existing layer within tolerance
     for (const layer of this.layers) {
       if (Math.abs(layer.baseZ - z) < 5) {
-        // 5cm tolerance
         return layer.id;
       }
     }
-    // Create new layer ID
     return this.layers.length;
   }
 
   /**
    * Calculate placement score (lower is better)
+   * Prioritizes: fill Y first (back of container) -> Z (bottom) -> X (left)
    */
   private calculateScore(position: { x: number; y: number; z: number }): number {
     return (
@@ -468,26 +307,17 @@ export class HorizontalStacker {
    * Calculate volume efficiency for current placement
    */
   public calculateEfficiency(): number {
-    const cylinders = this.valleyManager.getPlacedCylinders();
-    if (cylinders.length === 0) return 0;
+    if (this.placedCylinders.length === 0) return 0;
 
     let totalCylinderVolume = 0;
-    let maxX = 0,
-      maxY = 0,
-      maxZ = 0;
+    let maxX = 0, maxY = 0, maxZ = 0;
 
-    for (const cyl of cylinders) {
+    for (const cyl of this.placedCylinders) {
       totalCylinderVolume += Math.PI * cyl.radius * cyl.radius * cyl.length;
 
-      const dims = {
-        x: cyl.radius * 2,
-        y: cyl.length,
-        z: cyl.radius * 2,
-      };
-
-      maxX = Math.max(maxX, cyl.position.x + dims.x);
-      maxY = Math.max(maxY, cyl.position.y + dims.y);
-      maxZ = Math.max(maxZ, cyl.position.z + dims.z);
+      maxX = Math.max(maxX, cyl.position.x + cyl.radius * 2);
+      maxY = Math.max(maxY, cyl.position.y + cyl.length);
+      maxZ = Math.max(maxZ, cyl.position.z + cyl.radius * 2);
     }
 
     const boundingVolume = maxX * maxY * maxZ;
@@ -498,7 +328,7 @@ export class HorizontalStacker {
    * Get placed cylinders
    */
   public getPlacedCylinders(): PlacedCylinder[] {
-    return this.valleyManager.getPlacedCylinders();
+    return [...this.placedCylinders];
   }
 
   /**
