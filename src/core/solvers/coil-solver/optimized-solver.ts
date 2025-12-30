@@ -144,24 +144,46 @@ export class OptimizedCoilSolver {
 
     // Try each Z level
     for (const z of sortedZ) {
-      // Generate Y positions to try
+      // Generate Y positions to try - use fine grid for complete coverage
       const yPositions = new Set<number>();
       yPositions.add(0);
+
+      // Add positions from existing cylinders
       for (const box of placed) {
         yPositions.add(box.yMax); // Right after existing
         yPositions.add(box.yMin); // Aligned with existing
       }
+
+      // Add grid positions at length intervals for thorough search
+      const yStep = Math.min(length, 50);
+      for (let y = 0; y + length <= this.L; y += yStep) {
+        yPositions.add(y);
+      }
+      // Always try the last possible position
+      yPositions.add(this.L - length);
+
       const sortedY = Array.from(yPositions)
         .filter(y => y >= 0 && y + length <= this.L)
         .sort((a, b) => a - b);
 
-      // Generate X positions to try
+      // Generate X positions to try - use fine grid for complete coverage
       const xPositions = new Set<number>();
       xPositions.add(0);
+
+      // Add positions from existing cylinders
       for (const box of placed) {
         xPositions.add(box.xMax); // Right of existing
         xPositions.add(box.xMin); // Aligned with existing
       }
+
+      // Add grid positions at diameter intervals
+      const xStep = Math.min(diameter, 30);
+      for (let x = 0; x + diameter <= this.W; x += xStep) {
+        xPositions.add(x);
+      }
+      // Always try the last possible position
+      xPositions.add(this.W - diameter);
+
       const sortedX = Array.from(xPositions)
         .filter(x => x >= 0 && x + diameter <= this.W)
         .sort((a, b) => a - b);
