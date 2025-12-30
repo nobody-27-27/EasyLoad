@@ -13,7 +13,7 @@ export interface MixedSolverConfig {
 }
 
 const DEFAULT_CONFIG: MixedSolverConfig = {
-  coilStrategy: 'best-fit',
+  coilStrategy: 'horizontal-only', // Best for long cylinders (length > diameter)
   enableMixedStacking: false,
 };
 
