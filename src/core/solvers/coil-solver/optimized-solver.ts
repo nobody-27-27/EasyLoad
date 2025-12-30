@@ -73,6 +73,8 @@ export class OptimizedCoilSolver {
       () => this.packWithStrategy(all, 'diameter-first'),
       () => this.packWithStrategy(all, 'small-first'),
       () => this.packWithStrategy(all, 'large-first'),
+      () => this.packWithStrategy(all, 'by-diameter-groups'),
+      () => this.packWithStrategy(all, 'volume-desc'),
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] } | null = null;
@@ -106,7 +108,7 @@ export class OptimizedCoilSolver {
 
   private packWithStrategy(
     allCylinders: Cylinder[],
-    strategy: 'length-groups' | 'diameter-first' | 'small-first' | 'large-first'
+    strategy: 'length-groups' | 'diameter-first' | 'small-first' | 'large-first' | 'by-diameter-groups' | 'volume-desc'
   ): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     // Reset
     allCylinders.forEach(c => c.placed = false);
@@ -119,6 +121,9 @@ export class OptimizedCoilSolver {
     switch (strategy) {
       case 'length-groups':
         return this.packByLengthGroups(allCylinders);
+
+      case 'by-diameter-groups':
+        return this.packByDiameterGroups(allCylinders);
 
       case 'diameter-first':
         // Sort by diameter DESC, then length DESC
@@ -143,6 +148,15 @@ export class OptimizedCoilSolver {
           return a.length - b.length;
         });
         break;
+
+      case 'volume-desc':
+        // Sort by volume (largest first)
+        cylinders = [...allCylinders].sort((a, b) => {
+          const volA = Math.PI * (a.diameter / 2) ** 2 * a.length;
+          const volB = Math.PI * (b.diameter / 2) ** 2 * b.length;
+          return volB - volA;
+        });
+        break;
     }
 
     // Simple greedy packing
@@ -164,6 +178,89 @@ export class OptimizedCoilSolver {
 
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     return { placed, unplaced };
+  }
+
+  private packByDiameterGroups(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    // Group by diameter (within 5cm tolerance)
+    const groups = this.groupByDiameter(allCylinders, 5);
+
+    // Sort groups by diameter (largest first - they need more space)
+    groups.sort((a, b) => {
+      const maxA = Math.max(...a.map(c => c.diameter));
+      const maxB = Math.max(...b.map(c => c.diameter));
+      return maxB - maxA;
+    });
+
+    // Pack each diameter group
+    for (const group of groups) {
+      // Sort within group by length DESC
+      group.sort((a, b) => b.length - a.length);
+
+      for (const cyl of group) {
+        if (cyl.placed) continue;
+
+        const pos = this.findBestPosition(cyl, placedBoxes);
+        if (pos) {
+          const placedCyl = this.createPlacedCylinder(cyl, pos);
+          placed.push(placedCyl);
+          cyl.placed = true;
+          placedBoxes.push({
+            xMin: pos.x, xMax: pos.x + cyl.diameter,
+            yMin: pos.y, yMax: pos.y + cyl.length,
+            zMin: pos.z, zMax: pos.z + cyl.diameter,
+          });
+        }
+      }
+    }
+
+    // Final pass: try any remaining
+    const unplacedCyls = allCylinders.filter(c => !c.placed);
+    for (const cyl of unplacedCyls) {
+      const pos = this.findGapPosition(cyl, placedBoxes);
+      if (pos) {
+        const placedCyl = this.createPlacedCylinder(cyl, pos);
+        placed.push(placedCyl);
+        cyl.placed = true;
+        placedBoxes.push({
+          xMin: pos.x, xMax: pos.x + cyl.diameter,
+          yMin: pos.y, yMax: pos.y + cyl.length,
+          zMin: pos.z, zMax: pos.z + cyl.diameter,
+        });
+      }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
+  }
+
+  private groupByDiameter(cylinders: Cylinder[], tolerance: number): Cylinder[][] {
+    const sorted = [...cylinders].sort((a, b) => a.diameter - b.diameter);
+    const groups: Cylinder[][] = [];
+    let currentGroup: Cylinder[] = [];
+    let groupStart = 0;
+
+    for (const cyl of sorted) {
+      if (currentGroup.length === 0) {
+        currentGroup.push(cyl);
+        groupStart = cyl.diameter;
+      } else if (cyl.diameter - groupStart <= tolerance) {
+        currentGroup.push(cyl);
+      } else {
+        groups.push(currentGroup);
+        currentGroup = [cyl];
+        groupStart = cyl.diameter;
+      }
+    }
+    if (currentGroup.length > 0) {
+      groups.push(currentGroup);
+    }
+
+    return groups;
   }
 
   private packByLengthGroups(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {

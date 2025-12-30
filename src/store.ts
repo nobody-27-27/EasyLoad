@@ -198,8 +198,7 @@ export const useStore = create<AppState>((set, get) => ({
       isCalculating: false,
     });
 
-    // Kullanıcıya bilgi ver (Opsiyonel)
-    alert("Proje başarıyla yüklendi! Lütfen tekrar 'HESAPLA' butonuna basın.");
+    // Toast notification will be shown by the component
   },
 
   reset: () => set({ cargoList: [], resultItems: [] }),
