@@ -1,5 +1,5 @@
 // src/core/solvers/coil-solver/optimized-solver.ts
-// Strip-based cylinder packing - fills rows completely before stacking
+// Tight packing solver - fills Y direction first, minimizes gaps
 
 import type { Container, CargoItem } from '../../common/types';
 import type {
@@ -27,13 +27,10 @@ interface PlacedBox {
 }
 
 /**
- * Strip-based cylinder packing solver
+ * Tight packing cylinder solver
  *
- * Strategy:
- * 1. Group cylinders by similar length (within 20cm tolerance)
- * 2. For each group, pack in Y-strips (rows)
- * 3. Fill X direction first, then stack in Z, then move to next Y
- * 4. This maximizes density within each strip
+ * Strategy: Fill container length (Y) first, pack tightly in cross-section (XZ)
+ * Prioritizes: Y (front to back) > Z (floor to ceiling) > X (left to right)
  */
 export class OptimizedCoilSolver {
   private W: number;  // Container width (X)
@@ -64,52 +61,26 @@ export class OptimizedCoilSolver {
       }
     }
 
-    console.log(`=== CYLINDER PACKING (Strip-Based) ===`);
+    console.log(`=== CYLINDER PACKING (Tight Fill) ===`);
     console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
     console.log(`Cylinders to place: ${all.length}`);
 
-    // Group by similar length (within 25cm)
-    const groups = this.groupByLength(all, 25);
-    console.log(`Created ${groups.length} length groups`);
+    // Sort by length DESC (longest first to fill Y efficiently), then by diameter DESC
+    all.sort((a, b) => {
+      const lengthDiff = b.length - a.length;
+      if (Math.abs(lengthDiff) > 5) return lengthDiff;
+      return b.diameter - a.diameter;
+    });
 
     const placed: PlacedCylinder[] = [];
     const placedBoxes: PlacedBox[] = [];
     const unplaced: CargoItem[] = [];
 
-    let currentY = 0;
+    // Place each cylinder
+    for (const cyl of all) {
+      const pos = this.findBestPosition(cyl, placedBoxes);
 
-    // Process each length group
-    for (const group of groups) {
-      // Sort group by diameter (largest first for better base)
-      group.sort((a, b) => b.diameter - a.diameter);
-
-      // Find max length in this group (strip width)
-      const stripLength = Math.max(...group.map(c => c.length));
-
-      // Skip if strip doesn't fit
-      if (currentY + stripLength > this.L) {
-        // Try to fit remaining cylinders individually
-        for (const cyl of group) {
-          const pos = this.findAnyPosition(cyl, placedBoxes);
-          if (pos) {
-            const placedCyl = this.createPlacedCylinder(cyl, pos);
-            placed.push(placedCyl);
-            placedBoxes.push({
-              xMin: pos.x, xMax: pos.x + cyl.diameter,
-              yMin: pos.y, yMax: pos.y + cyl.length,
-              zMin: pos.z, zMax: pos.z + cyl.diameter,
-            });
-          } else {
-            unplaced.push(cyl.item);
-          }
-        }
-        continue;
-      }
-
-      // Pack this group in the current strip
-      const { placedInStrip, remaining } = this.packStrip(group, currentY, stripLength, placedBoxes);
-
-      for (const { cyl, pos } of placedInStrip) {
+      if (pos) {
         const placedCyl = this.createPlacedCylinder(cyl, pos);
         placed.push(placedCyl);
         placedBoxes.push({
@@ -117,27 +88,8 @@ export class OptimizedCoilSolver {
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
         });
-      }
-
-      // Move Y forward by strip length
-      if (placedInStrip.length > 0) {
-        currentY += stripLength;
-      }
-
-      // Try to place remaining cylinders elsewhere
-      for (const cyl of remaining) {
-        const pos = this.findAnyPosition(cyl, placedBoxes);
-        if (pos) {
-          const placedCyl = this.createPlacedCylinder(cyl, pos);
-          placed.push(placedCyl);
-          placedBoxes.push({
-            xMin: pos.x, xMax: pos.x + cyl.diameter,
-            yMin: pos.y, yMax: pos.y + cyl.length,
-            zMin: pos.z, zMax: pos.z + cyl.diameter,
-          });
-        } else {
-          unplaced.push(cyl.item);
-        }
+      } else {
+        unplaced.push(cyl.item);
       }
     }
 
@@ -154,112 +106,10 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * Group cylinders by similar length
+   * Find the best position for a cylinder
+   * Priority: Minimize Y, then Z, then X (pack from front, bottom, left)
    */
-  private groupByLength(cylinders: Cylinder[], tolerance: number): Cylinder[][] {
-    // Sort by length
-    const sorted = [...cylinders].sort((a, b) => a.length - b.length);
-
-    const groups: Cylinder[][] = [];
-    let currentGroup: Cylinder[] = [];
-    let groupStartLength = 0;
-
-    for (const cyl of sorted) {
-      if (currentGroup.length === 0) {
-        currentGroup.push(cyl);
-        groupStartLength = cyl.length;
-      } else if (cyl.length - groupStartLength <= tolerance) {
-        currentGroup.push(cyl);
-      } else {
-        groups.push(currentGroup);
-        currentGroup = [cyl];
-        groupStartLength = cyl.length;
-      }
-    }
-
-    if (currentGroup.length > 0) {
-      groups.push(currentGroup);
-    }
-
-    // Sort groups by max length (shortest first to pack front)
-    groups.sort((a, b) => {
-      const maxA = Math.max(...a.map(c => c.length));
-      const maxB = Math.max(...b.map(c => c.length));
-      return maxA - maxB;
-    });
-
-    return groups;
-  }
-
-  /**
-   * Pack cylinders in a strip (Y-slice)
-   * Returns placed cylinders and any that couldn't fit
-   */
-  private packStrip(
-    cylinders: Cylinder[],
-    stripY: number,
-    _stripLength: number,
-    existingBoxes: PlacedBox[]
-  ): { placedInStrip: Array<{ cyl: Cylinder; pos: { x: number; y: number; z: number } }>; remaining: Cylinder[] } {
-    const placedInStrip: Array<{ cyl: Cylinder; pos: { x: number; y: number; z: number } }> = [];
-    const remaining: Cylinder[] = [];
-
-    // Track what's been placed in this strip
-    const stripBoxes: PlacedBox[] = [];
-
-    // All boxes for collision detection
-    const allBoxes = () => [...existingBoxes, ...stripBoxes];
-
-    for (const cyl of cylinders) {
-      let placed = false;
-
-      // Try to pack in this strip - fill X first, then stack Z
-      // Try each Z level (floor first)
-      const zLevels = [0];
-      for (const box of stripBoxes) {
-        if (!zLevels.includes(box.zMax)) {
-          zLevels.push(box.zMax);
-        }
-      }
-      zLevels.sort((a, b) => a - b);
-
-      for (const z of zLevels) {
-        if (z + cyl.diameter > this.H) continue;
-
-        // Try X positions from left to right
-        for (let x = 0; x + cyl.diameter <= this.W; x++) {
-          const pos = { x, y: stripY, z };
-
-          if (this.canPlace(pos, cyl.diameter, cyl.length, allBoxes())) {
-            // Check support
-            if (z === 0 || this.hasSupport(pos, cyl.diameter, cyl.length, allBoxes())) {
-              placedInStrip.push({ cyl, pos });
-              stripBoxes.push({
-                xMin: x, xMax: x + cyl.diameter,
-                yMin: stripY, yMax: stripY + cyl.length,
-                zMin: z, zMax: z + cyl.diameter,
-              });
-              placed = true;
-              break;
-            }
-          }
-        }
-
-        if (placed) break;
-      }
-
-      if (!placed) {
-        remaining.push(cyl);
-      }
-    }
-
-    return { placedInStrip, remaining };
-  }
-
-  /**
-   * Find any valid position in the container
-   */
-  private findAnyPosition(
+  private findBestPosition(
     cyl: Cylinder,
     placed: PlacedBox[]
   ): { x: number; y: number; z: number } | null {
@@ -269,96 +119,132 @@ export class OptimizedCoilSolver {
       return null;
     }
 
-    // Collect all possible Y positions
-    const yPositions = new Set<number>();
-    yPositions.add(0);
+    let bestPos: { x: number; y: number; z: number } | null = null;
+    let bestScore = Infinity;
+
+    // Generate candidate Y positions
+    const ySet = new Set<number>();
+    ySet.add(0);
     for (const box of placed) {
-      yPositions.add(box.yMin);
-      yPositions.add(box.yMax);
+      ySet.add(box.yMin);
+      ySet.add(box.yMax);
     }
+    const yCandidates = Array.from(ySet)
+      .filter(y => y >= 0 && y + length <= this.L)
+      .sort((a, b) => a - b);
 
-    // Collect all possible Z levels
-    const zLevels = new Set<number>();
-    zLevels.add(0);
+    // Generate candidate Z positions
+    const zSet = new Set<number>();
+    zSet.add(0);
     for (const box of placed) {
-      zLevels.add(box.zMax);
+      zSet.add(box.zMax);
     }
+    const zCandidates = Array.from(zSet)
+      .filter(z => z >= 0 && z + diameter <= this.H)
+      .sort((a, b) => a - b);
 
-    const sortedZ = Array.from(zLevels).filter(z => z + diameter <= this.H).sort((a, b) => a - b);
-    const sortedY = Array.from(yPositions).filter(y => y + length <= this.L).sort((a, b) => a - b);
+    // Generate candidate X positions
+    const xSet = new Set<number>();
+    xSet.add(0);
+    for (const box of placed) {
+      xSet.add(box.xMax);
+      xSet.add(box.xMin);
+    }
+    const xCandidates = Array.from(xSet)
+      .filter(x => x >= 0 && x + diameter <= this.W)
+      .sort((a, b) => a - b);
 
-    for (const z of sortedZ) {
-      for (const y of sortedY) {
-        // Try X positions
-        for (let x = 0; x + diameter <= this.W; x++) {
-          const pos = { x, y, z };
-          if (this.canPlace(pos, diameter, length, placed)) {
-            if (z === 0 || this.hasSupport(pos, diameter, length, placed)) {
-              return pos;
+    // Try all combinations, score by Y * 10000 + Z * 100 + X
+    for (const y of yCandidates) {
+      for (const z of zCandidates) {
+        // Skip if no support for z > 0
+        if (z > 0) {
+          const hasSupport = this.checkSupport(y, z, diameter, length, placed);
+          if (!hasSupport) continue;
+        }
+
+        for (const x of xCandidates) {
+          if (this.canPlace(x, y, z, diameter, length, placed)) {
+            const score = y * 10000 + z * 100 + x;
+            if (score < bestScore) {
+              bestScore = score;
+              bestPos = { x, y, z };
             }
           }
         }
       }
     }
 
-    return null;
+    return bestPos;
   }
 
   /**
-   * Check if position is valid (no collision, within bounds)
+   * Check if there's support at the given Y, Z position
    */
-  private canPlace(
-    pos: { x: number; y: number; z: number },
-    diameter: number,
+  private checkSupport(
+    y: number,
+    z: number,
+    _diameter: number,
     length: number,
     placed: PlacedBox[]
   ): boolean {
-    const { x, y, z } = pos;
+    // Find any box that could support at this Z level
+    for (const box of placed) {
+      if (Math.abs(box.zMax - z) < 1) {
+        // Check Y overlap (for any X)
+        if (box.yMax > y && box.yMin < y + length) {
+          // This box is at the right height and overlaps in Y
+          // We'll verify X overlap in canPlace
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
+  /**
+   * Check if position is valid
+   */
+  private canPlace(
+    x: number, y: number, z: number,
+    diameter: number, length: number,
+    placed: PlacedBox[]
+  ): boolean {
     // Bounds check
     if (x < 0 || x + diameter > this.W) return false;
     if (y < 0 || y + length > this.L) return false;
     if (z < 0 || z + diameter > this.H) return false;
 
-    // Collision check
     const newBox = {
       xMin: x, xMax: x + diameter,
       yMin: y, yMax: y + length,
       zMin: z, zMax: z + diameter,
     };
 
+    // Collision check
     for (const box of placed) {
       if (this.boxesOverlap(newBox, box)) {
         return false;
       }
     }
 
-    return true;
-  }
-
-  /**
-   * Check if cylinder has support (for z > 0)
-   */
-  private hasSupport(
-    pos: { x: number; y: number; z: number },
-    diameter: number,
-    length: number,
-    placed: PlacedBox[]
-  ): boolean {
-    const { x, y, z } = pos;
-
-    for (const box of placed) {
-      // Check if box top is at our bottom (within 1cm tolerance)
-      if (Math.abs(box.zMax - z) < 1) {
-        // Check XY overlap
-        if (box.xMax > x && box.xMin < x + diameter &&
-            box.yMax > y && box.yMin < y + length) {
-          return true;
+    // Support check for z > 0
+    if (z > 0) {
+      let hasSupport = false;
+      for (const box of placed) {
+        if (Math.abs(box.zMax - z) < 1) {
+          // Check XY overlap
+          if (box.xMax > x && box.xMin < x + diameter &&
+              box.yMax > y && box.yMin < y + length) {
+            hasSupport = true;
+            break;
+          }
         }
       }
+      if (!hasSupport) return false;
     }
 
-    return false;
+    return true;
   }
 
   /**
