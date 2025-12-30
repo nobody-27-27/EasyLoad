@@ -6,6 +6,7 @@ import { useStore } from './store';
 import { ExportManager } from './core/infrastructure/export-manager';
 import { ProjectControls } from './components/ProjectControls';
 import { ResizableSidebar } from './components/ResizableSidebar';
+import { ToastContainer } from './components/Toast';
 
 export default function App() {
   const {
@@ -51,10 +52,12 @@ export default function App() {
   return (
     // Arka planı BEYAZ (bg-gray-50) yapıyoruz.
     // 'h-screen' bazen çalışmaz, o yüzden style={{ height: '100vh' }} ile zorluyoruz.
-    <div
-      style={{ height: '100vh', width: '100vw' }}
-      className="flex bg-gray-50 text-gray-800 font-sans overflow-hidden"
-    >
+    <>
+      <ToastContainer />
+      <div
+        style={{ height: '100vh', width: '100vw' }}
+        className="flex bg-gray-50 text-gray-800 font-sans overflow-hidden"
+      >
       {/* SOL PANEL (KONTROLLER) - Resizable */}
       <ResizableSidebar defaultWidth={320} minWidth={280} maxWidth={600}>
         <div className="p-4 border-b border-gray-200 bg-blue-50">
@@ -228,6 +231,7 @@ export default function App() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

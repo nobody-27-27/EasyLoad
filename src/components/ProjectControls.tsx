@@ -1,6 +1,7 @@
 // src/components/ProjectControls.tsx
 import React, { useRef } from 'react';
 import { useStore } from '../store';
+import { showToast } from './Toast';
 
 export const ProjectControls: React.FC = () => {
   const { container, cargoList, loadProject } = useStore();
@@ -44,13 +45,14 @@ export const ProjectControls: React.FC = () => {
             // Basit bir doğrulama: içinde cargoList var mı?
             if (parsedData.cargoList) {
               loadProject(parsedData);
+              showToast("Proje yüklendi! 'HESAPLA' butonuna basın.", 'success');
             } else {
-              alert('Geçersiz proje dosyası!');
+              showToast('Geçersiz proje dosyası!', 'error');
             }
           }
         } catch (error) {
           console.error(error);
-          alert('Dosya okunamadı!');
+          showToast('Dosya okunamadı!', 'error');
         }
       };
     }
