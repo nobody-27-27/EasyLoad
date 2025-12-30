@@ -32,7 +32,6 @@ export class HoneycombLayerBuilder {
         rot: { x: number; y: number; z: number };
         score: number;
       } | null = null;
-      let usedCandidateIndex = -1;
 
       // 1. MEVCUT ADAY NOKTALARI TARA
       // Sort candidates: Y (Back) -> Z (Bottom) -> X (Left)
@@ -64,7 +63,6 @@ export class HoneycombLayerBuilder {
 
             if (!bestMove || score < bestMove.score) {
               bestMove = { pos: point, rot: rot, score: score };
-              usedCandidateIndex = i;
             }
           }
         }
@@ -250,11 +248,11 @@ export class HoneycombLayerBuilder {
     return queue;
   }
 
-  // Interface uyumluluğu için boş metodlar
-  public solveVertical(s: number, m: number, i: CargoItem[]) {
+  // Interface uyumluluğu için boş metodlar (Legacy stubs)
+  public solveVertical(_s: number, _m: number, _i: CargoItem[]) {
     return [];
   }
-  public solveHorizontal(s: number, i: CargoItem[]) {
+  public solveHorizontal(_s: number, _i: CargoItem[]) {
     return [];
   }
 }
