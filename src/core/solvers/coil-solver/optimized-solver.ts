@@ -148,6 +148,33 @@ export class OptimizedCoilSolver {
       bestResult!.unplaced = unplacedCyls.filter(c => !c.placed).map(c => c.item);
     }
 
+    // Final fallback: try VERTICAL placement for any remaining unplaced
+    if (bestResult!.unplaced.length > 0) {
+      const stillUnplaced = all.filter(c =>
+        bestResult!.unplaced.some(u => u.name === c.item.name && !c.placed)
+      );
+
+      for (const cyl of stillUnplaced) {
+        if (cyl.placed) continue;
+
+        // Try vertical placement: diameter becomes footprint, length becomes height
+        const vertPos = this.findVerticalPosition(cyl, bestResult!.placedBoxes);
+        if (vertPos) {
+          const placedCyl = this.createVerticalPlacedCylinder(cyl, vertPos);
+          bestResult!.placed.push(placedCyl);
+          // For vertical, the box dimensions change
+          bestResult!.placedBoxes.push({
+            xMin: vertPos.x, xMax: vertPos.x + cyl.diameter,
+            yMin: vertPos.y, yMax: vertPos.y + cyl.diameter,
+            zMin: vertPos.z, zMax: vertPos.z + cyl.length,
+          });
+          cyl.placed = true;
+        }
+      }
+
+      bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+
     const { placed, unplaced } = bestResult!;
 
     console.log(`Placed: ${placed.length}/${all.length}`);
@@ -1465,6 +1492,159 @@ export class OptimizedCoilSolver {
     return false;
   }
 
+
+  /**
+   * Find position for vertical cylinder placement
+   * Vertical: diameter is footprint (X, Y), length is height (Z)
+   */
+  private findVerticalPosition(
+    cyl: Cylinder,
+    placed: PlacedBox[]
+  ): { x: number; y: number; z: number } | null {
+    const { diameter, length } = cyl;
+
+    // Check if vertical placement is even possible
+    if (diameter > this.W || diameter > this.L || length > this.H) {
+      return null;
+    }
+
+    // For vertical placement, scan floor positions
+    // The cylinder needs diameter x diameter footprint
+    for (let y = 0; y + diameter <= this.L; y += 5) {
+      for (let x = 0; x + diameter <= this.W; x += 5) {
+        const pos = { x, y, z: 0 };
+        if (this.canPlaceVertical(pos, diameter, length, placed)) {
+          return pos;
+        }
+      }
+    }
+
+    // Try stacking vertically on top of other vertical cylinders
+    const zLevels = [...new Set(placed.map(b => b.zMax))].filter(z => z + length <= this.H);
+    zLevels.sort((a, b) => a - b);
+
+    for (const z of zLevels) {
+      for (let y = 0; y + diameter <= this.L; y += 5) {
+        for (let x = 0; x + diameter <= this.W; x += 5) {
+          const pos = { x, y, z };
+          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            // Check for support (need something below)
+            if (this.hasVerticalSupport(pos, diameter, placed)) {
+              return pos;
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if vertical cylinder can be placed (no collision)
+   */
+  private canPlaceVertical(
+    pos: { x: number; y: number; z: number },
+    diameter: number, length: number,
+    placed: PlacedBox[]
+  ): boolean {
+    const { x, y, z } = pos;
+    const radius = diameter / 2;
+
+    // Check bounds (for vertical: diameter is X/Y footprint, length is height Z)
+    if (x < 0 || x + diameter > this.W) return false;
+    if (y < 0 || y + diameter > this.L) return false;
+    if (z < 0 || z + length > this.H) return false;
+
+    // Center of vertical cylinder in XY plane
+    const cx = x + radius;
+    const cy = y + radius;
+
+    for (const box of placed) {
+      // Check Z overlap first
+      if (z >= box.zMax || z + length <= box.zMin) {
+        continue;
+      }
+
+      // Z overlaps - check XY collision
+      const otherW = box.xMax - box.xMin;
+      const otherL = box.yMax - box.yMin;
+
+      // If the other box is roughly square (another vertical cylinder)
+      if (Math.abs(otherW - otherL) < 5) {
+        // Circular collision in XY
+        const otherR = otherW / 2;
+        const otherCx = box.xMin + otherR;
+        const otherCy = box.yMin + otherR;
+
+        const dx = cx - otherCx;
+        const dy = cy - otherCy;
+        const distSq = dx * dx + dy * dy;
+        const minDist = radius + otherR - 1;
+
+        if (distSq < minDist * minDist) {
+          return false;
+        }
+      } else {
+        // Box collision (horizontal cylinder or other shape)
+        if (x < box.xMax && x + diameter > box.xMin &&
+            y < box.yMax && y + diameter > box.yMin) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Check if vertical cylinder has support below
+   */
+  private hasVerticalSupport(
+    pos: { x: number; y: number; z: number },
+    diameter: number,
+    placed: PlacedBox[]
+  ): boolean {
+    const { x, y, z } = pos;
+
+    for (const box of placed) {
+      if (Math.abs(box.zMax - z) <= 2) {
+        // Check XY overlap
+        const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+        const yOverlap = Math.min(y + diameter, box.yMax) - Math.max(y, box.yMin);
+
+        if (xOverlap > diameter * 0.3 && yOverlap > diameter * 0.3) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Create a placed cylinder in vertical orientation
+   */
+  private createVerticalPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
+    const radius = cyl.diameter / 2;
+
+    return {
+      item: cyl.item,
+      uniqueId: `cyl_${cyl.index}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      center: {
+        x: pos.x + radius,
+        y: pos.y + radius,
+        z: pos.z + cyl.length / 2,
+      },
+      radius,
+      length: cyl.length,
+      orientation: 'vertical',
+      rotation: ORIENTATION_ROTATIONS['vertical'],
+      layerId: Math.floor(pos.z / 50),
+      supportedBy: [],
+    };
+  }
 
   private createPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
     const radius = cyl.diameter / 2;
