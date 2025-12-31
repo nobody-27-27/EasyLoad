@@ -187,9 +187,6 @@ export class OptimizedCoilSolver {
       // Get the dominant diameter for this group
       const dominantDiameter = group.length > 0 ? group[0].diameter : 0;
 
-      // Calculate hexagonal layer height: diameter * sin(60°) ≈ 0.866 * diameter
-      const hexHeight = dominantDiameter * 0.866;
-
       // Pack floor layer (row 0)
       let floorCylinders: PlacedBox[] = [];
       for (const cyl of group) {
@@ -215,16 +212,30 @@ export class OptimizedCoilSolver {
       }
 
       // Pack valley rows (cylinders nestle between floor cylinders)
-      let rowZ = hexHeight; // Start at valley height
-      let rowNum = 1;
+      // For hexagonal packing, calculate exact Z positions based on geometry
+      // When cylinder of radius r rests between two touching cylinders of radius r:
+      // The vertical rise is r * sqrt(3) ≈ 1.732 * r from center to center
+      // So bottom-to-bottom rise is r * (sqrt(3) - 1) ≈ 0.732 * r less than diameter
+      const valleyRise = dominantDiameter * 0.866; // Approximate rise for each valley layer
 
-      while (rowZ + dominantDiameter <= this.H && group.some(c => !c.placed)) {
+      let rowNum = 1;
+      let maxLayers = Math.ceil(this.H / valleyRise) + 1;
+
+      while (rowNum < maxLayers && group.some(c => !c.placed)) {
         const isOffsetRow = rowNum % 2 === 1;
+        // Calculate Z based on row number
+        // Row 0: z = 0
+        // Row 1: z = valleyRise (nestled in valley)
+        // Row 2: z = 2 * valleyRise
+        // etc.
+        const rowZ = rowNum * valleyRise;
+
+        if (rowZ + dominantDiameter > this.H) break;
 
         for (const cyl of group) {
           if (cyl.placed) continue;
 
-          // For offset rows, start at radius offset
+          // For offset rows, start at radius offset (in the valleys)
           const xStart = isOffsetRow ? cyl.diameter / 2 : 0;
 
           // Try valley positions
@@ -247,7 +258,6 @@ export class OptimizedCoilSolver {
           }
         }
 
-        rowZ += hexHeight;
         rowNum++;
       }
 
@@ -1302,36 +1312,41 @@ export class OptimizedCoilSolver {
     const { x, y, z } = pos;
     const radius = diameter / 2;
     const cx = x + radius;
+    const cz = z + radius; // Center Z of new cylinder
 
     // Check for support from cylinders below
     // Support can come from:
-    // 1. Single cylinder directly below (center-to-center alignment)
+    // 1. Single cylinder directly below (stacking on top)
     // 2. Two cylinders forming a valley (cylinder rests in the gap)
 
     const supportCandidates: PlacedBox[] = [];
 
     for (const box of placed) {
-      // Check if this box could provide support (is below our position)
-      const boxTop = box.zMax;
-      if (Math.abs(boxTop - z) > 2) continue; // Not at the right height
-
-      // Check Y overlap
+      // Check Y overlap (must overlap in length direction)
       if (y >= box.yMax || y + length <= box.yMin) continue;
+
+      // For support, the supporting cylinder must be below us
+      // Its top (zMax) should be at or below our center Z
+      if (box.zMax > cz + 5) continue; // Support is too high
+      if (box.zMax < z - 5) continue; // Support is too low (our bottom is above their top)
 
       supportCandidates.push(box);
     }
 
-    if (supportCandidates.length === 0) return false;
-
-    // Check for single cylinder support (at least 30% overlap in X)
+    // Check for direct stacking support (cylinder sits on top of another)
     for (const box of supportCandidates) {
-      const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
-      if (xOverlap >= diameter * 0.3) {
-        return true;
+      // Direct support: our bottom (z) is near their top (zMax)
+      if (Math.abs(box.zMax - z) <= 5) {
+        const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+        if (xOverlap >= diameter * 0.3) {
+          return true;
+        }
       }
     }
 
     // Check for valley support (resting between two cylinders)
+    // For valley support, our center Z should be BELOW the tops of support cylinders
+    // because we nestle down between them
     for (let i = 0; i < supportCandidates.length; i++) {
       for (let j = i + 1; j < supportCandidates.length; j++) {
         const box1 = supportCandidates[i];
@@ -1341,16 +1356,59 @@ export class OptimizedCoilSolver {
         const r2 = (box2.xMax - box2.xMin) / 2;
         const cx1 = box1.xMin + r1;
         const cx2 = box2.xMin + r2;
+        const cz1 = box1.zMin + r1;
+        const cz2 = box2.zMin + r2;
 
-        // Check if new cylinder center is between the two support cylinders
+        // Check if the two support cylinders are at similar height
+        if (Math.abs(cz1 - cz2) > 10) continue;
+
+        // Distance between support cylinder centers in X
+        const dxSupport = Math.abs(cx2 - cx1);
+
+        // For valley nesting, support cylinders should be close enough
+        // that the new cylinder can touch both
+        // Max gap where new cylinder can still touch both: 2 * (r1 + radius) for same-size
+        if (dxSupport > r1 + r2 + diameter) continue;
+
+        // Check if new cylinder center is positioned to rest in valley
         const minCx = Math.min(cx1, cx2);
         const maxCx = Math.max(cx1, cx2);
 
-        if (cx >= minCx - radius && cx <= maxCx + radius) {
-          // Check if the gap is appropriate for valley nesting
-          const gap = Math.abs(cx2 - cx1) - r1 - r2;
-          if (gap < diameter && gap > -diameter) {
-            return true; // Can rest in valley
+        // New cylinder center should be between the two support centers
+        if (cx >= minCx - radius * 0.5 && cx <= maxCx + radius * 0.5) {
+          // Verify geometry: calculate expected Z for valley nesting
+          // When resting in valley between two cylinders, the geometry gives:
+          // cz = cz_support + sqrt((r + r_support)^2 - (dx/2)^2)
+          // where dx is the horizontal distance between support centers
+
+          const avgSupportCz = (cz1 + cz2) / 2;
+          const avgSupportR = (r1 + r2) / 2;
+          const halfGap = dxSupport / 2;
+          const sumRadii = radius + avgSupportR;
+
+          if (sumRadii > halfGap) {
+            const expectedCz = avgSupportCz + Math.sqrt(sumRadii * sumRadii - halfGap * halfGap);
+            // Allow some tolerance in Z position
+            if (Math.abs(cz - expectedCz) < radius * 0.5) {
+              return true;
+            }
+            // Also accept if we're just resting on top of the valley
+            if (cz >= avgSupportCz && cz <= expectedCz + radius * 0.3) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // Also check for wall support (cylinder against container wall with partial support)
+    if (x <= 5 || x + diameter >= this.W - 5) {
+      // Near wall - can have support from single cylinder if touching wall
+      for (const box of supportCandidates) {
+        if (Math.abs(box.zMax - z) <= 5) {
+          const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+          if (xOverlap >= diameter * 0.2) {
+            return true;
           }
         }
       }
