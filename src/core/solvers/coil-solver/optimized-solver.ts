@@ -1646,6 +1646,7 @@ export class OptimizedCoilSolver {
   /**
    * Find position for vertical cylinder placement
    * Vertical: diameter is footprint (X, Y), length is height (Z)
+   * AGGRESSIVE: tries floor, stacking on horizontals, any available space
    */
   private findVerticalPosition(
     cyl: Cylinder,
@@ -1658,69 +1659,87 @@ export class OptimizedCoilSolver {
       return null;
     }
 
-    // Collect candidate Y positions from existing boxes and regular grid
-    const yPositions = new Set<number>([0]);
+    console.log(`    Searching vertical position for D${diameter} L${length}...`);
+
+    // Strategy 1: Find Y gaps where no horizontal cylinders exist
+    // Collect all Y ranges used by placed items
+    const yRanges: { start: number; end: number }[] = [];
     for (const box of placed) {
-      yPositions.add(box.yMin);
-      yPositions.add(box.yMax);
-      if (box.yMax + diameter <= this.L) yPositions.add(box.yMax);
+      yRanges.push({ start: box.yMin, end: box.yMax });
     }
-    // Add regular grid points
-    for (let y = 0; y + diameter <= this.L; y += 10) {
-      yPositions.add(y);
+    yRanges.sort((a, b) => a.start - b.start);
+
+    // Find Y gaps
+    const yGaps: { start: number; end: number }[] = [];
+    let lastEnd = 0;
+    for (const range of yRanges) {
+      if (range.start > lastEnd) {
+        yGaps.push({ start: lastEnd, end: range.start });
+      }
+      lastEnd = Math.max(lastEnd, range.end);
     }
-    // Add last possible position
-    if (this.L - diameter >= 0) yPositions.add(this.L - diameter);
-
-    const sortedY = Array.from(yPositions)
-      .filter(y => y >= 0 && y + diameter <= this.L)
-      .sort((a, b) => a - b);
-
-    // Collect candidate X positions
-    const xPositions = new Set<number>([0]);
-    for (const box of placed) {
-      xPositions.add(box.xMin);
-      xPositions.add(box.xMax);
-      if (box.xMax + diameter <= this.W) xPositions.add(box.xMax);
+    // Add final gap at end of container
+    if (lastEnd < this.L) {
+      yGaps.push({ start: lastEnd, end: this.L });
     }
-    for (let x = 0; x + diameter <= this.W; x += 10) {
-      xPositions.add(x);
-    }
-    if (this.W - diameter >= 0) xPositions.add(this.W - diameter);
 
-    const sortedX = Array.from(xPositions)
-      .filter(x => x >= 0 && x + diameter <= this.W)
-      .sort((a, b) => a - b);
+    console.log(`      Y gaps found: ${yGaps.map(g => `[${g.start}-${g.end}]`).join(', ')}`);
 
-    // For vertical placement, scan floor positions first with multiple grid sizes
-    for (const step of [10, 5, 2, 1]) {
-      for (const y of sortedY) {
-        for (const x of sortedX) {
+    // Try floor positions in Y gaps first
+    for (const gap of yGaps) {
+      if (gap.end - gap.start < diameter) continue;
+
+      for (let y = gap.start; y + diameter <= gap.end; y += 5) {
+        for (let x = 0; x + diameter <= this.W; x += 5) {
           const pos = { x, y, z: 0 };
           if (this.canPlaceVertical(pos, diameter, length, placed)) {
-            return pos;
-          }
-        }
-        // Also try finer grid
-        for (let x = 0; x + diameter <= this.W; x += step) {
-          const pos = { x, y, z: 0 };
-          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            console.log(`      Found floor position in Y gap at (${x}, ${y}, 0)`);
             return pos;
           }
         }
       }
     }
 
-    // Try stacking vertically on top of other items
-    const zLevels = [...new Set(placed.map(b => b.zMax))].filter(z => z + length <= this.H);
-    zLevels.sort((a, b) => a - b);
+    // Strategy 2: Stack on top of horizontal cylinders
+    // For each placed box, try placing vertical cylinder on top
+    const zLevelsWithBoxes = new Map<number, PlacedBox[]>();
+    for (const box of placed) {
+      const z = box.zMax;
+      if (!zLevelsWithBoxes.has(z)) zLevelsWithBoxes.set(z, []);
+      zLevelsWithBoxes.get(z)!.push(box);
+    }
 
-    for (const z of zLevels) {
-      for (const y of sortedY) {
-        for (const x of sortedX) {
+    // Sort Z levels ascending (try lower positions first)
+    const sortedZLevels = Array.from(zLevelsWithBoxes.keys()).sort((a, b) => a - b);
+
+    for (const z of sortedZLevels) {
+      if (z + length > this.H) continue;
+
+      const boxesAtLevel = zLevelsWithBoxes.get(z)!;
+      console.log(`      Trying z=${z} (${boxesAtLevel.length} boxes at this level)`);
+
+      for (const box of boxesAtLevel) {
+        // Try placing centered on this box
+        const boxCenterX = (box.xMin + box.xMax) / 2;
+        const boxCenterY = (box.yMin + box.yMax) / 2;
+
+        // Try various positions on top of this box
+        const tryPositions = [
+          { x: boxCenterX - diameter / 2, y: boxCenterY - diameter / 2 },
+          { x: box.xMin, y: box.yMin },
+          { x: box.xMin, y: boxCenterY - diameter / 2 },
+          { x: boxCenterX - diameter / 2, y: box.yMin },
+        ];
+
+        for (const tryPos of tryPositions) {
+          // Clamp to container bounds
+          const x = Math.max(0, Math.min(tryPos.x, this.W - diameter));
+          const y = Math.max(0, Math.min(tryPos.y, this.L - diameter));
+
           const pos = { x, y, z };
           if (this.canPlaceVertical(pos, diameter, length, placed)) {
             if (this.hasVerticalSupport(pos, diameter, placed)) {
+              console.log(`      Found stacked position at (${x}, ${y}, ${z})`);
               return pos;
             }
           }
@@ -1728,11 +1747,49 @@ export class OptimizedCoilSolver {
       }
     }
 
+    // Strategy 3: Exhaustive grid search at all Z levels
+    console.log(`      Trying exhaustive search...`);
+    for (const z of [0, ...sortedZLevels]) {
+      if (z + length > this.H) continue;
+
+      for (let y = 0; y + diameter <= this.L; y += 10) {
+        for (let x = 0; x + diameter <= this.W; x += 10) {
+          const pos = { x, y, z };
+          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            if (z === 0 || this.hasVerticalSupport(pos, diameter, placed)) {
+              console.log(`      Found position at (${x}, ${y}, ${z})`);
+              return pos;
+            }
+          }
+        }
+      }
+    }
+
+    // Strategy 4: Fine grid search
+    console.log(`      Trying fine grid search...`);
+    for (const z of [0, ...sortedZLevels]) {
+      if (z + length > this.H) continue;
+
+      for (let y = 0; y + diameter <= this.L; y += 2) {
+        for (let x = 0; x + diameter <= this.W; x += 2) {
+          const pos = { x, y, z };
+          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            if (z === 0 || this.hasVerticalSupport(pos, diameter, placed)) {
+              console.log(`      Found position at (${x}, ${y}, ${z})`);
+              return pos;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`      No vertical position found`);
     return null;
   }
 
   /**
    * Check if vertical cylinder can be placed (no collision)
+   * Handles both vertical-vs-vertical and vertical-vs-horizontal collisions
    */
   private canPlaceVertical(
     pos: { x: number; y: number; z: number },
@@ -1754,17 +1811,17 @@ export class OptimizedCoilSolver {
     for (const box of placed) {
       // Check Z overlap first
       if (z >= box.zMax || z + length <= box.zMin) {
-        continue;
+        continue; // No Z overlap, no collision
       }
 
       // Z overlaps - check XY collision
-      const otherW = box.xMax - box.xMin;
-      const otherL = box.yMax - box.yMin;
+      const boxW = box.xMax - box.xMin;
+      const boxL = box.yMax - box.yMin;
 
-      // If the other box is roughly square (another vertical cylinder)
-      if (Math.abs(otherW - otherL) < 5) {
-        // Circular collision in XY
-        const otherR = otherW / 2;
+      // Determine if box is a horizontal cylinder (long in Y) or vertical (square-ish)
+      if (Math.abs(boxW - boxL) < 10) {
+        // Square-ish box - another vertical cylinder, use circular collision
+        const otherR = boxW / 2;
         const otherCx = box.xMin + otherR;
         const otherCy = box.yMin + otherR;
 
@@ -1777,9 +1834,22 @@ export class OptimizedCoilSolver {
           return false;
         }
       } else {
-        // Box collision (horizontal cylinder or other shape)
-        if (x < box.xMax && x + diameter > box.xMin &&
-            y < box.yMax && y + diameter > box.yMin) {
+        // Horizontal cylinder (long in Y direction)
+        // The horizontal cylinder is circular in XZ plane, rectangular in XY projection
+        // For simplicity, check if vertical cylinder circle overlaps with box rectangle
+
+        // Circle-rectangle collision: find closest point on rectangle to circle center
+        const closestX = Math.max(box.xMin, Math.min(cx, box.xMax));
+        const closestY = Math.max(box.yMin, Math.min(cy, box.yMax));
+
+        const dx = cx - closestX;
+        const dy = cy - closestY;
+        const distSq = dx * dx + dy * dy;
+
+        // Tolerance for touching
+        const minDist = radius - 1;
+
+        if (distSq < minDist * minDist) {
           return false;
         }
       }
@@ -1790,6 +1860,7 @@ export class OptimizedCoilSolver {
 
   /**
    * Check if vertical cylinder has support below
+   * Supports resting on horizontal cylinders, vertical cylinders, or multiple items
    */
   private hasVerticalSupport(
     pos: { x: number; y: number; z: number },
@@ -1797,15 +1868,59 @@ export class OptimizedCoilSolver {
     placed: PlacedBox[]
   ): boolean {
     const { x, y, z } = pos;
+    const radius = diameter / 2;
+    const cx = x + radius;
+    const cy = y + radius;
 
+    // Find all boxes that could provide support (their top is at or near our bottom)
+    const supportCandidates: PlacedBox[] = [];
     for (const box of placed) {
-      if (Math.abs(box.zMax - z) <= 2) {
-        // Check XY overlap
-        const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
-        const yOverlap = Math.min(y + diameter, box.yMax) - Math.max(y, box.yMin);
+      // Support must be below us (their zMax near our z)
+      if (box.zMax <= z + 5 && box.zMax >= z - 5) {
+        supportCandidates.push(box);
+      }
+    }
 
-        if (xOverlap > diameter * 0.3 && yOverlap > diameter * 0.3) {
-          return true;
+    // Check for any overlapping support
+    for (const box of supportCandidates) {
+      const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+      const yOverlap = Math.min(y + diameter, box.yMax) - Math.max(y, box.yMin);
+
+      // Need at least 30% overlap in both directions for stability
+      if (xOverlap > diameter * 0.3 && yOverlap > diameter * 0.3) {
+        return true;
+      }
+    }
+
+    // Also check for multi-point support (resting on multiple items)
+    // Calculate total support area from all candidates
+    let totalSupportArea = 0;
+    const requiredArea = diameter * diameter * 0.25; // Need 25% coverage
+
+    for (const box of supportCandidates) {
+      const xOverlap = Math.max(0, Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin));
+      const yOverlap = Math.max(0, Math.min(y + diameter, box.yMax) - Math.max(y, box.yMin));
+      totalSupportArea += xOverlap * yOverlap;
+    }
+
+    if (totalSupportArea >= requiredArea) {
+      return true;
+    }
+
+    // Special case: resting on top of a horizontal cylinder
+    // The vertical cylinder can rest on the curved top of a horizontal cylinder
+    for (const box of supportCandidates) {
+      const boxW = box.xMax - box.xMin;
+      const boxL = box.yMax - box.yMin;
+
+      // Is this a horizontal cylinder? (long in Y)
+      if (boxL > boxW * 2) {
+        // Check if vertical cylinder center is within the horizontal cylinder's X range
+        if (cx >= box.xMin && cx <= box.xMax) {
+          // Check if within Y range
+          if (cy >= box.yMin && cy <= box.yMax) {
+            return true;
+          }
         }
       }
     }
