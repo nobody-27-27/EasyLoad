@@ -69,6 +69,7 @@ export class OptimizedCoilSolver {
 
     // Try multiple strategies and pick the best result
     const strategies = [
+      () => this.packHexagonal(all), // Hexagonal/valley nesting - most efficient
       () => this.packWithStrategy(all, 'length-groups'),
       () => this.packWithStrategy(all, 'diameter-first'),
       () => this.packWithStrategy(all, 'small-first'),
@@ -77,7 +78,7 @@ export class OptimizedCoilSolver {
       () => this.packWithStrategy(all, 'volume-desc'),
       () => this.packMixedOptimal(all),
       () => this.packLargestFirst(all),
-      () => this.packByStackEfficiency(all), // New: maximize vertical stacking
+      () => this.packByStackEfficiency(all),
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
@@ -159,6 +160,145 @@ export class OptimizedCoilSolver {
       unplacedItems: unplaced,
       statistics: this.calcStats(placed, unplaced.length),
     };
+  }
+
+  /**
+   * Hexagonal packing - uses valley nesting for maximum density
+   * Cylinders in even rows nestle into gaps between cylinders in odd rows
+   */
+  private packHexagonal(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    // Group by similar length
+    const lengthGroups = this.groupByLength([...allCylinders], 10);
+
+    let currentY = 0;
+
+    for (const group of lengthGroups) {
+      const maxLength = Math.max(...group.map(c => c.length));
+      if (currentY + maxLength > this.L) continue;
+
+      // Sort by diameter (largest first for floor, to create stable base)
+      group.sort((a, b) => b.diameter - a.diameter);
+
+      // Get the dominant diameter for this group
+      const dominantDiameter = group.length > 0 ? group[0].diameter : 0;
+
+      // Calculate hexagonal layer height: diameter * sin(60°) ≈ 0.866 * diameter
+      const hexHeight = dominantDiameter * 0.866;
+
+      // Pack floor layer (row 0)
+      let floorCylinders: PlacedBox[] = [];
+      for (const cyl of group) {
+        if (cyl.placed) continue;
+
+        // Try positions along X, spaced by diameter
+        for (let x = 0; x + cyl.diameter <= this.W; x += 1) {
+          const pos = { x, y: currentY, z: 0 };
+          if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            const placedCyl = this.createPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            const box = {
+              xMin: pos.x, xMax: pos.x + cyl.diameter,
+              yMin: currentY, yMax: currentY + cyl.length,
+              zMin: 0, zMax: cyl.diameter,
+            };
+            placedBoxes.push(box);
+            floorCylinders.push(box);
+            break;
+          }
+        }
+      }
+
+      // Pack valley rows (cylinders nestle between floor cylinders)
+      let rowZ = hexHeight; // Start at valley height
+      let rowNum = 1;
+
+      while (rowZ + dominantDiameter <= this.H && group.some(c => !c.placed)) {
+        const isOffsetRow = rowNum % 2 === 1;
+
+        for (const cyl of group) {
+          if (cyl.placed) continue;
+
+          // For offset rows, start at radius offset
+          const xStart = isOffsetRow ? cyl.diameter / 2 : 0;
+
+          // Try valley positions
+          for (let x = xStart; x + cyl.diameter <= this.W; x += 1) {
+            const pos = { x, y: currentY, z: rowZ };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              // Check for support (valley or direct)
+              if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: currentY, yMax: currentY + cyl.length,
+                  zMin: rowZ, zMax: rowZ + cyl.diameter,
+                });
+                break;
+              }
+            }
+          }
+        }
+
+        rowZ += hexHeight;
+        rowNum++;
+      }
+
+      // Also try direct stacking for remaining cylinders
+      const zLevels = [...new Set(placedBoxes.filter(b => b.yMin === currentY).map(b => b.zMax))];
+      zLevels.sort((a, b) => a - b);
+
+      for (const z of zLevels) {
+        if (z + dominantDiameter > this.H) continue;
+
+        for (const cyl of group) {
+          if (cyl.placed) continue;
+
+          for (let x = 0; x + cyl.diameter <= this.W; x += 1) {
+            const pos = { x, y: currentY, z };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes) &&
+                this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCyl = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: currentY, yMax: currentY + cyl.length,
+                zMin: z, zMax: z + cyl.diameter,
+              });
+              break;
+            }
+          }
+        }
+      }
+
+      currentY += maxLength;
+    }
+
+    // Final pass: exhaustive search for remaining
+    for (const cyl of allCylinders.filter(c => !c.placed)) {
+      const pos = this.exhaustiveSearch(cyl, placedBoxes);
+      if (pos) {
+        const placedCyl = this.createPlacedCylinder(cyl, pos);
+        placed.push(placedCyl);
+        cyl.placed = true;
+        placedBoxes.push({
+          xMin: pos.x, xMax: pos.x + cyl.diameter,
+          yMin: pos.y, yMax: pos.y + cyl.length,
+          zMin: pos.z, zMax: pos.z + cyl.diameter,
+        });
+      }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
   }
 
   private packWithStrategy(
@@ -1118,20 +1258,36 @@ export class OptimizedCoilSolver {
     placed: PlacedBox[]
   ): boolean {
     const { x, y, z } = pos;
+    const radius = diameter / 2;
 
+    // Check container bounds
     if (x < 0 || x + diameter > this.W) return false;
     if (y < 0 || y + length > this.L) return false;
     if (z < 0 || z + diameter > this.H) return false;
 
-    const newBox = {
-      xMin: x, xMax: x + diameter,
-      yMin: y, yMax: y + length,
-      zMin: z, zMax: z + diameter,
-    };
+    // Center of new cylinder in XZ plane
+    const cx = x + radius;
+    const cz = z + radius;
 
+    // Check collision with each placed cylinder using circular cross-section
     for (const box of placed) {
-      if (this.boxesOverlap(newBox, box)) {
-        return false;
+      // First check Y overlap (bounding box style - cylinders along Y)
+      if (y >= box.yMax || y + length <= box.yMin) {
+        continue; // No Y overlap, no collision possible
+      }
+
+      // Y overlaps, now check XZ circular collision
+      const otherRadius = (box.xMax - box.xMin) / 2;
+      const otherCx = box.xMin + otherRadius;
+      const otherCz = box.zMin + otherRadius;
+
+      const dx = cx - otherCx;
+      const dz = cz - otherCz;
+      const distSq = dx * dx + dz * dz;
+      const minDist = radius + otherRadius - 1; // 1cm tolerance for touching
+
+      if (distSq < minDist * minDist) {
+        return false; // Circular cross-sections overlap
       }
     }
 
@@ -1144,39 +1300,65 @@ export class OptimizedCoilSolver {
     placed: PlacedBox[]
   ): boolean {
     const { x, y, z } = pos;
+    const radius = diameter / 2;
+    const cx = x + radius;
 
-    // More lenient support checking - require at least 50% overlap in X
-    // and any overlap in Y (for cylinders of similar length)
-    const minXOverlap = diameter * 0.5;
+    // Check for support from cylinders below
+    // Support can come from:
+    // 1. Single cylinder directly below (center-to-center alignment)
+    // 2. Two cylinders forming a valley (cylinder rests in the gap)
+
+    const supportCandidates: PlacedBox[] = [];
 
     for (const box of placed) {
-      // Check Z alignment (support must be directly below)
-      if (Math.abs(box.zMax - z) < 2) {
-        // Calculate X overlap
-        const xOverlapStart = Math.max(x, box.xMin);
-        const xOverlapEnd = Math.min(x + diameter, box.xMax);
-        const xOverlap = xOverlapEnd - xOverlapStart;
+      // Check if this box could provide support (is below our position)
+      const boxTop = box.zMax;
+      if (Math.abs(boxTop - z) > 2) continue; // Not at the right height
 
-        // Calculate Y overlap
-        const yOverlapStart = Math.max(y, box.yMin);
-        const yOverlapEnd = Math.min(y + length, box.yMax);
-        const yOverlap = yOverlapEnd - yOverlapStart;
+      // Check Y overlap
+      if (y >= box.yMax || y + length <= box.yMin) continue;
 
-        // Require significant X overlap and any Y overlap
-        if (xOverlap >= minXOverlap && yOverlap > 0) {
-          return true;
+      supportCandidates.push(box);
+    }
+
+    if (supportCandidates.length === 0) return false;
+
+    // Check for single cylinder support (at least 30% overlap in X)
+    for (const box of supportCandidates) {
+      const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+      if (xOverlap >= diameter * 0.3) {
+        return true;
+      }
+    }
+
+    // Check for valley support (resting between two cylinders)
+    for (let i = 0; i < supportCandidates.length; i++) {
+      for (let j = i + 1; j < supportCandidates.length; j++) {
+        const box1 = supportCandidates[i];
+        const box2 = supportCandidates[j];
+
+        const r1 = (box1.xMax - box1.xMin) / 2;
+        const r2 = (box2.xMax - box2.xMin) / 2;
+        const cx1 = box1.xMin + r1;
+        const cx2 = box2.xMin + r2;
+
+        // Check if new cylinder center is between the two support cylinders
+        const minCx = Math.min(cx1, cx2);
+        const maxCx = Math.max(cx1, cx2);
+
+        if (cx >= minCx - radius && cx <= maxCx + radius) {
+          // Check if the gap is appropriate for valley nesting
+          const gap = Math.abs(cx2 - cx1) - r1 - r2;
+          if (gap < diameter && gap > -diameter) {
+            return true; // Can rest in valley
+          }
         }
       }
     }
+
     return false;
   }
 
-  private boxesOverlap(a: PlacedBox, b: PlacedBox): boolean {
-    if (a.xMax <= b.xMin || a.xMin >= b.xMax) return false;
-    if (a.yMax <= b.yMin || a.yMin >= b.yMax) return false;
-    if (a.zMax <= b.zMin || a.zMin >= b.zMax) return false;
-    return true;
-  }
 
   private createPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
     const radius = cyl.diameter / 2;
