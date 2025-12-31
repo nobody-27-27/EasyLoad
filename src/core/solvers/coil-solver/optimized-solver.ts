@@ -238,7 +238,28 @@ export class OptimizedCoilSolver {
           // For offset rows, start at radius offset (in the valleys)
           const xStart = isOffsetRow ? cyl.diameter / 2 : 0;
 
-          // Try valley positions
+          // First try wall positions (x=0 and x=W-D) which can have wall support
+          const wallPositions = [0, this.W - cyl.diameter];
+          for (const x of wallPositions) {
+            if (x < 0) continue;
+            const pos = { x, y: currentY, z: rowZ };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: currentY, yMax: currentY + cyl.length,
+                  zMin: rowZ, zMax: rowZ + cyl.diameter,
+                });
+                break;
+              }
+            }
+          }
+          if (cyl.placed) continue;
+
+          // Then try valley positions
           for (let x = xStart; x + cyl.diameter <= this.W; x += 1) {
             const pos = { x, y: currentY, z: rowZ };
             if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
@@ -1401,14 +1422,41 @@ export class OptimizedCoilSolver {
       }
     }
 
-    // Also check for wall support (cylinder against container wall with partial support)
+    // Also check for wall support (cylinder against container wall)
+    // Wall acts as one side of a "valley", so we only need ONE support cylinder
     if (x <= 5 || x + diameter >= this.W - 5) {
-      // Near wall - can have support from single cylinder if touching wall
-      for (const box of supportCandidates) {
-        if (Math.abs(box.zMax - z) <= 5) {
-          const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
-          if (xOverlap >= diameter * 0.2) {
-            return true;
+      for (const box of placed) {
+        // Check Y overlap
+        if (y >= box.yMax || y + length <= box.yMin) continue;
+
+        // Check if support is below us (their top is below our center)
+        if (box.zMax > cz + 5) continue;
+        if (box.zMax < 0) continue;
+
+        const boxR = (box.xMax - box.xMin) / 2;
+        const boxCx = box.xMin + boxR;
+        const boxCz = box.zMin + boxR;
+
+        // Check X overlap or proximity
+        const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+        if (xOverlap < 0) continue;
+
+        // For wall support, calculate if the geometry works
+        // Wall + one cylinder can support another cylinder in a valley-like configuration
+        const dx = Math.abs(cx - boxCx);
+        const sumRadii = radius + boxR;
+
+        if (dx < sumRadii + 10) { // Close enough horizontally
+          // Calculate expected Z for resting against wall + one cylinder
+          // This is similar to valley but with wall as virtual cylinder
+          const wallCx = x <= 5 ? 0 : this.W; // Virtual wall cylinder center
+          const dxToWall = Math.abs(cx - wallCx);
+
+          if (dxToWall < radius + 5) { // Touching wall
+            // Check if Z position is reasonable for support
+            if (cz > boxCz && cz < boxCz + sumRadii + 10) {
+              return true;
+            }
           }
         }
       }
