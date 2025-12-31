@@ -69,6 +69,7 @@ export class OptimizedCoilSolver {
 
     // Try multiple strategies and pick the best result
     const strategies = [
+      () => this.packDifficultFirst(all), // Place large-diameter cylinders first (vertical)
       () => this.packMixedOrientations(all), // TRUE mixed orientation - tries both for each cylinder
       () => this.packHexagonal(all), // Hexagonal/valley nesting - most efficient
       () => this.packWithStrategy(all, 'length-groups'),
@@ -588,6 +589,216 @@ export class OptimizedCoilSolver {
 
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     console.log(`  Mixed orientation result: ${placed.length} placed, ${unplaced.length} unplaced`);
+    return { placed, unplaced };
+  }
+
+  /**
+   * Place "difficult" cylinders first - large diameter ones that need vertical placement
+   * Then pack the rest around them
+   */
+  private packDifficultFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`=== DIFFICULT FIRST PACKING ===`);
+
+    // Identify "difficult" cylinders: large diameter relative to container width
+    // These are best placed vertically to save horizontal space
+    const difficult: Cylinder[] = [];
+    const easy: Cylinder[] = [];
+
+    for (const cyl of allCylinders) {
+      // Cylinder is "difficult" if:
+      // 1. Diameter is large (> 80% of container width / 2) OR
+      // 2. Length is short enough for vertical (length <= H) AND diameter is > 90
+      const isDifficult = cyl.diameter > 90 || (cyl.length <= this.H && cyl.diameter > this.W / 3);
+      if (isDifficult) {
+        difficult.push(cyl);
+      } else {
+        easy.push(cyl);
+      }
+    }
+
+    console.log(`  Difficult cylinders: ${difficult.length}, Easy: ${easy.length}`);
+
+    // Sort difficult by diameter DESC (place largest first)
+    difficult.sort((a, b) => b.diameter - a.diameter);
+
+    // Place difficult cylinders FIRST - try vertical at back of container
+    for (const cyl of difficult) {
+      let placed_cyl = false;
+
+      // Try vertical placement first (at back of container - high Y)
+      if (cyl.length <= this.H) {
+        // Start from back of container
+        for (let y = this.L - cyl.diameter; y >= 0 && !placed_cyl; y -= 10) {
+          for (let x = 0; x + cyl.diameter <= this.W && !placed_cyl; x += 10) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCylinder = this.createVerticalPlacedCylinder(cyl, pos);
+              placed.push(placedCylinder);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: pos.y, yMax: pos.y + cyl.diameter,
+                zMin: 0, zMax: cyl.length,
+              });
+              console.log(`  DIFFICULT ${cyl.item.name} D${cyl.diameter}: VERTICAL at (${pos.x}, ${pos.y}, 0)`);
+              placed_cyl = true;
+            }
+          }
+        }
+      }
+
+      // If vertical didn't work, try horizontal
+      if (!placed_cyl) {
+        for (let y = 0; y + cyl.length <= this.L && !placed_cyl; y += 10) {
+          for (let x = 0; x + cyl.diameter <= this.W && !placed_cyl; x += 10) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCylinder = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCylinder);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: pos.y, yMax: pos.y + cyl.length,
+                zMin: 0, zMax: cyl.diameter,
+              });
+              console.log(`  DIFFICULT ${cyl.item.name} D${cyl.diameter}: HORIZONTAL at (${pos.x}, ${pos.y}, 0)`);
+              placed_cyl = true;
+            }
+          }
+        }
+      }
+    }
+
+    // Now pack easy cylinders using hexagonal packing
+    // Sort by length (group similar lengths)
+    easy.sort((a, b) => a.length - b.length);
+
+    // Group by similar length
+    const lengthGroups = this.groupByLength(easy, 15);
+    let currentY = 0;
+
+    for (const group of lengthGroups) {
+      const maxLength = Math.max(...group.map(c => c.length));
+      if (currentY + maxLength > this.L) continue;
+
+      // Sort by diameter DESC for floor stability
+      group.sort((a, b) => b.diameter - a.diameter);
+
+      // Pack floor layer
+      for (const cyl of group) {
+        if (cyl.placed) continue;
+
+        for (let x = 0; x + cyl.diameter <= this.W; x += 5) {
+          const pos = { x, y: currentY, z: 0 };
+          if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            const placedCylinder = this.createPlacedCylinder(cyl, pos);
+            placed.push(placedCylinder);
+            cyl.placed = true;
+            placedBoxes.push({
+              xMin: pos.x, xMax: pos.x + cyl.diameter,
+              yMin: currentY, yMax: currentY + cyl.length,
+              zMin: 0, zMax: cyl.diameter,
+            });
+            break;
+          }
+        }
+      }
+
+      // Stack on floor layer
+      const dominantDiameter = group.length > 0 ? group[0].diameter : 60;
+      const valleyRise = dominantDiameter * 0.866;
+
+      for (let layer = 1; layer <= 4; layer++) {
+        const layerZ = layer * valleyRise;
+        if (layerZ + dominantDiameter > this.H) break;
+
+        for (const cyl of group) {
+          if (cyl.placed) continue;
+
+          const xOffset = (layer % 2 === 1) ? cyl.diameter / 2 : 0;
+          for (let x = xOffset; x + cyl.diameter <= this.W; x += 5) {
+            const supportedZ = this.findSupportedZ(x, currentY, cyl, placedBoxes);
+            if (supportedZ === null || supportedZ + cyl.diameter > this.H) continue;
+
+            const pos = { x, y: currentY, z: supportedZ };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCylinder = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCylinder);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: currentY, yMax: currentY + cyl.length,
+                zMin: supportedZ, zMax: supportedZ + cyl.diameter,
+              });
+              break;
+            }
+          }
+        }
+      }
+
+      currentY += maxLength;
+    }
+
+    // Final pass: exhaustive search for any remaining
+    const remaining = allCylinders.filter(c => !c.placed);
+    console.log(`  Remaining after main packing: ${remaining.length}`);
+
+    for (const cyl of remaining) {
+      // Try horizontal exhaustive
+      let found = false;
+      for (let z = 0; z + cyl.diameter <= this.H && !found; z += 5) {
+        for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              if (z === 0 || this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCylinder = this.createPlacedCylinder(cyl, pos);
+                placed.push(placedCylinder);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.length,
+                  zMin: pos.z, zMax: pos.z + cyl.diameter,
+                });
+                found = true;
+              }
+            }
+          }
+        }
+      }
+
+      // Try vertical exhaustive
+      if (!found && cyl.length <= this.H) {
+        for (let z = 0; z + cyl.length <= this.H && !found; z += 5) {
+          for (let y = 0; y + cyl.diameter <= this.L && !found; y += 5) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+              const pos = { x, y, z };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasVerticalSupport(pos, cyl.diameter, placedBoxes)) {
+                  const placedCylinder = this.createVerticalPlacedCylinder(cyl, pos);
+                  placed.push(placedCylinder);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.diameter,
+                    zMin: pos.z, zMax: pos.z + cyl.length,
+                  });
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    console.log(`  Difficult-first result: ${placed.length} placed, ${unplaced.length} unplaced`);
     return { placed, unplaced };
   }
 
