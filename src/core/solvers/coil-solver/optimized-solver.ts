@@ -150,16 +150,25 @@ export class OptimizedCoilSolver {
 
     // Final fallback: try VERTICAL placement for any remaining unplaced
     if (bestResult!.unplaced.length > 0) {
-      const stillUnplaced = all.filter(c =>
-        bestResult!.unplaced.some(u => u.name === c.item.name && !c.placed)
-      );
+      // Find all unplaced cylinders by checking placed status
+      const stillUnplaced = all.filter(c => !c.placed);
+
+      // Sort by smallest diameter first (easier to fit)
+      stillUnplaced.sort((a, b) => a.diameter - b.diameter);
+
+      console.log(`Trying vertical placement for ${stillUnplaced.length} unplaced cylinders`);
 
       for (const cyl of stillUnplaced) {
-        if (cyl.placed) continue;
+        // Check if vertical placement is even possible (length must fit in height)
+        if (cyl.length > this.H) {
+          console.log(`  ${cyl.item.name} D${cyl.diameter} L${cyl.length}: too tall for vertical (H=${this.H})`);
+          continue;
+        }
 
         // Try vertical placement: diameter becomes footprint, length becomes height
         const vertPos = this.findVerticalPosition(cyl, bestResult!.placedBoxes);
         if (vertPos) {
+          console.log(`  ${cyl.item.name} D${cyl.diameter} L${cyl.length}: placed VERTICAL at (${vertPos.x}, ${vertPos.y}, ${vertPos.z})`);
           const placedCyl = this.createVerticalPlacedCylinder(cyl, vertPos);
           bestResult!.placed.push(placedCyl);
           // For vertical, the box dimensions change
@@ -169,6 +178,8 @@ export class OptimizedCoilSolver {
             zMin: vertPos.z, zMax: vertPos.z + cyl.length,
           });
           cyl.placed = true;
+        } else {
+          console.log(`  ${cyl.item.name} D${cyl.diameter} L${cyl.length}: could not find vertical position`);
         }
       }
 
@@ -199,6 +210,8 @@ export class OptimizedCoilSolver {
     const placed: PlacedCylinder[] = [];
     const placedBoxes: PlacedBox[] = [];
 
+    console.log(`=== HEXAGONAL PACKING ===`);
+
     // Group by similar length
     const lengthGroups = this.groupByLength([...allCylinders], 10);
 
@@ -213,6 +226,7 @@ export class OptimizedCoilSolver {
 
       // Get the dominant diameter for this group
       const dominantDiameter = group.length > 0 ? group[0].diameter : 0;
+      console.log(`  Group at Y=${currentY}: ${group.length} cylinders, maxLen=${maxLength}, domD=${dominantDiameter}`);
 
       // Pack floor layer (row 0)
       let floorCylinders: PlacedBox[] = [];
@@ -250,14 +264,10 @@ export class OptimizedCoilSolver {
 
       while (rowNum < maxLayers && group.some(c => !c.placed)) {
         const isOffsetRow = rowNum % 2 === 1;
-        // Calculate Z based on row number
-        // Row 0: z = 0
-        // Row 1: z = valleyRise (nestled in valley)
-        // Row 2: z = 2 * valleyRise
-        // etc.
-        const rowZ = rowNum * valleyRise;
+        // Calculate base Z for this row (actual position depends on supports)
+        const baseRowZ = rowNum * valleyRise;
 
-        if (rowZ + dominantDiameter > this.H) break;
+        if (baseRowZ + dominantDiameter > this.H) break;
 
         for (const cyl of group) {
           if (cyl.placed) continue;
@@ -269,39 +279,47 @@ export class OptimizedCoilSolver {
           const wallPositions = [0, this.W - cyl.diameter];
           for (const x of wallPositions) {
             if (x < 0) continue;
-            const pos = { x, y: currentY, z: rowZ };
+
+            // Find the actual Z position where this cylinder would rest
+            const supportedZ = this.findSupportedZ(x, currentY, cyl, placedBoxes);
+            if (supportedZ === null) continue;
+            if (supportedZ + cyl.diameter > this.H) continue;
+
+            const pos = { x, y: currentY, z: supportedZ };
             if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-              if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                const placedCyl = this.createPlacedCylinder(cyl, pos);
-                placed.push(placedCyl);
-                cyl.placed = true;
-                placedBoxes.push({
-                  xMin: pos.x, xMax: pos.x + cyl.diameter,
-                  yMin: currentY, yMax: currentY + cyl.length,
-                  zMin: rowZ, zMax: rowZ + cyl.diameter,
-                });
-                break;
-              }
+              const placedCyl = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: currentY, yMax: currentY + cyl.length,
+                zMin: supportedZ, zMax: supportedZ + cyl.diameter,
+              });
+              console.log(`    Placed D${cyl.diameter} at x=${x}, z=${supportedZ} (wall)`);
+              break;
             }
           }
           if (cyl.placed) continue;
 
           // Then try valley positions
           for (let x = xStart; x + cyl.diameter <= this.W; x += 1) {
-            const pos = { x, y: currentY, z: rowZ };
+            // Find the actual Z position where this cylinder would rest
+            const supportedZ = this.findSupportedZ(x, currentY, cyl, placedBoxes);
+            if (supportedZ === null) continue;
+            if (supportedZ + cyl.diameter > this.H) continue;
+
+            const pos = { x, y: currentY, z: supportedZ };
             if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-              // Check for support (valley or direct)
-              if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                const placedCyl = this.createPlacedCylinder(cyl, pos);
-                placed.push(placedCyl);
-                cyl.placed = true;
-                placedBoxes.push({
-                  xMin: pos.x, xMax: pos.x + cyl.diameter,
-                  yMin: currentY, yMax: currentY + cyl.length,
-                  zMin: rowZ, zMax: rowZ + cyl.diameter,
-                });
-                break;
-              }
+              const placedCyl = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: currentY, yMax: currentY + cyl.length,
+                zMin: supportedZ, zMax: supportedZ + cyl.diameter,
+              });
+              console.log(`    Placed D${cyl.diameter} at x=${x}, z=${supportedZ} (valley)`);
+              break;
             }
           }
         }
@@ -1352,6 +1370,138 @@ export class OptimizedCoilSolver {
     return true;
   }
 
+  /**
+   * Find the exact Z position where a cylinder would rest based on supports
+   * Returns the Z coordinate (bottom of cylinder) or null if no support found
+   */
+  private findSupportedZ(
+    x: number, y: number,
+    cyl: Cylinder,
+    placed: PlacedBox[]
+  ): number | null {
+    const { diameter, length } = cyl;
+    const radius = diameter / 2;
+    const cx = x + radius;
+
+    // If at floor level, return 0
+    if (placed.length === 0) return 0;
+
+    // Find all potential supports (cylinders that overlap in Y and could support this position)
+    const supports: { box: PlacedBox; cx: number; cz: number; r: number }[] = [];
+
+    for (const box of placed) {
+      // Check Y overlap
+      if (y >= box.yMax || y + length <= box.yMin) continue;
+
+      const boxR = (box.xMax - box.xMin) / 2;
+      const boxCx = box.xMin + boxR;
+      const boxCz = box.zMin + boxR;
+
+      // Check if horizontally close enough to potentially support
+      const dx = Math.abs(cx - boxCx);
+      if (dx <= radius + boxR + 5) {
+        supports.push({ box, cx: boxCx, cz: boxCz, r: boxR });
+      }
+    }
+
+    if (supports.length === 0) {
+      // No supports nearby - can only place on floor
+      return 0;
+    }
+
+    // Sort supports by Z (top of cylinder) descending to find highest position
+    supports.sort((a, b) => b.box.zMax - a.box.zMax);
+
+    // Check for direct stacking on a single cylinder
+    for (const support of supports) {
+      const dx = Math.abs(cx - support.cx);
+      // Direct stacking: centers are aligned enough
+      if (dx <= Math.max(radius, support.r) * 0.5) {
+        // Rest directly on top
+        return support.box.zMax;
+      }
+    }
+
+    // Check for valley support between two cylinders
+    for (let i = 0; i < supports.length; i++) {
+      for (let j = i + 1; j < supports.length; j++) {
+        const s1 = supports[i];
+        const s2 = supports[j];
+
+        // Check if both supports are at similar height
+        if (Math.abs(s1.cz - s2.cz) > 10) continue;
+
+        const cx1 = s1.cx;
+        const cx2 = s2.cx;
+        const r1 = s1.r;
+        const r2 = s2.r;
+        const avgR = (r1 + r2) / 2;
+
+        // Distance between support centers
+        const dxSupport = Math.abs(cx2 - cx1);
+
+        // Check if new cylinder center is between supports
+        const minCx = Math.min(cx1, cx2);
+        const maxCx = Math.max(cx1, cx2);
+
+        if (cx >= minCx - 5 && cx <= maxCx + 5) {
+          // Calculate expected Z for valley nesting
+          // Center-to-center distance in X from new cylinder to each support
+          const halfGap = dxSupport / 2;
+          const sumRadii = radius + avgR;
+
+          if (sumRadii > halfGap) {
+            // Calculate Z where cylinder rests in valley
+            const avgSupportCz = (s1.cz + s2.cz) / 2;
+            const rise = Math.sqrt(sumRadii * sumRadii - halfGap * halfGap);
+            const expectedCz = avgSupportCz + rise;
+            const expectedZ = expectedCz - radius;
+
+            if (expectedZ > 0 && expectedZ + diameter <= this.H) {
+              return expectedZ;
+            }
+          }
+        }
+      }
+    }
+
+    // Check for wall + single cylinder support
+    if (x <= 5 || x + diameter >= this.W - 5) {
+      const wallCx = x <= 5 ? 0 : this.W;
+      const dxToWall = Math.abs(cx - wallCx);
+
+      for (const support of supports) {
+        const dx = Math.abs(cx - support.cx);
+        const sumRadii = radius + support.r;
+
+        // Calculate valley-like Z with wall as one support
+        if (dxToWall < radius && dx < sumRadii) {
+          // Wall provides one side of support
+          const halfGap = dx / 2;
+          if (sumRadii > halfGap) {
+            const rise = Math.sqrt(sumRadii * sumRadii - halfGap * halfGap);
+            const expectedCz = support.cz + rise;
+            const expectedZ = expectedCz - radius;
+
+            if (expectedZ > 0 && expectedZ + diameter <= this.H) {
+              return expectedZ;
+            }
+          }
+        }
+      }
+    }
+
+    // If no proper support found, try direct stacking with more tolerance
+    for (const support of supports) {
+      const xOverlap = Math.min(x + diameter, support.box.xMax) - Math.max(x, support.box.xMin);
+      if (xOverlap >= diameter * 0.3) {
+        return support.box.zMax;
+      }
+    }
+
+    return null;
+  }
+
   private hasSupport(
     pos: { x: number; y: number; z: number },
     diameter: number, length: number,
@@ -1508,27 +1658,68 @@ export class OptimizedCoilSolver {
       return null;
     }
 
-    // For vertical placement, scan floor positions
-    // The cylinder needs diameter x diameter footprint
-    for (let y = 0; y + diameter <= this.L; y += 5) {
-      for (let x = 0; x + diameter <= this.W; x += 5) {
-        const pos = { x, y, z: 0 };
-        if (this.canPlaceVertical(pos, diameter, length, placed)) {
-          return pos;
+    // Collect candidate Y positions from existing boxes and regular grid
+    const yPositions = new Set<number>([0]);
+    for (const box of placed) {
+      yPositions.add(box.yMin);
+      yPositions.add(box.yMax);
+      if (box.yMax + diameter <= this.L) yPositions.add(box.yMax);
+    }
+    // Add regular grid points
+    for (let y = 0; y + diameter <= this.L; y += 10) {
+      yPositions.add(y);
+    }
+    // Add last possible position
+    if (this.L - diameter >= 0) yPositions.add(this.L - diameter);
+
+    const sortedY = Array.from(yPositions)
+      .filter(y => y >= 0 && y + diameter <= this.L)
+      .sort((a, b) => a - b);
+
+    // Collect candidate X positions
+    const xPositions = new Set<number>([0]);
+    for (const box of placed) {
+      xPositions.add(box.xMin);
+      xPositions.add(box.xMax);
+      if (box.xMax + diameter <= this.W) xPositions.add(box.xMax);
+    }
+    for (let x = 0; x + diameter <= this.W; x += 10) {
+      xPositions.add(x);
+    }
+    if (this.W - diameter >= 0) xPositions.add(this.W - diameter);
+
+    const sortedX = Array.from(xPositions)
+      .filter(x => x >= 0 && x + diameter <= this.W)
+      .sort((a, b) => a - b);
+
+    // For vertical placement, scan floor positions first with multiple grid sizes
+    for (const step of [10, 5, 2, 1]) {
+      for (const y of sortedY) {
+        for (const x of sortedX) {
+          const pos = { x, y, z: 0 };
+          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            return pos;
+          }
+        }
+        // Also try finer grid
+        for (let x = 0; x + diameter <= this.W; x += step) {
+          const pos = { x, y, z: 0 };
+          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            return pos;
+          }
         }
       }
     }
 
-    // Try stacking vertically on top of other vertical cylinders
+    // Try stacking vertically on top of other items
     const zLevels = [...new Set(placed.map(b => b.zMax))].filter(z => z + length <= this.H);
     zLevels.sort((a, b) => a - b);
 
     for (const z of zLevels) {
-      for (let y = 0; y + diameter <= this.L; y += 5) {
-        for (let x = 0; x + diameter <= this.W; x += 5) {
+      for (const y of sortedY) {
+        for (const x of sortedX) {
           const pos = { x, y, z };
           if (this.canPlaceVertical(pos, diameter, length, placed)) {
-            // Check for support (need something below)
             if (this.hasVerticalSupport(pos, diameter, placed)) {
               return pos;
             }
