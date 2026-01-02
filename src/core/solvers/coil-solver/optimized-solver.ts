@@ -518,25 +518,24 @@ export class OptimizedCoilSolver {
         if (z + cyl.diameter > this.H) continue;
 
         // Try placing horizontal cylinder on top of vertical
-        for (let y = 0; y + cyl.length <= this.L; y += 5) {
-          // Position X centered on vertical cylinder
-          const x = Math.max(0, Math.min(vBox.xMin, this.W - cyl.diameter));
-          const pos = { x, y, z };
+        // Try ALL X positions that could overlap with this vertical
+        for (let y = 0; y + cyl.length <= this.L && !cyl.placed; y += 5) {
+          for (let x = 0; x + cyl.diameter <= this.W && !cyl.placed; x += 5) {
+            const pos = { x, y, z };
 
-          if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-            // Check if there's some support
-            const xOverlap = Math.min(x + cyl.diameter, vBox.xMax) - Math.max(x, vBox.xMin);
-            if (xOverlap > cyl.diameter * 0.3) {
-              const placedCyl = this.createPlacedCylinder(cyl, pos);
-              placed.push(placedCyl);
-              cyl.placed = true;
-              placedBoxes.push({
-                xMin: pos.x, xMax: pos.x + cyl.diameter,
-                yMin: pos.y, yMax: pos.y + cyl.length,
-                zMin: pos.z, zMax: pos.z + cyl.diameter,
-              });
-              console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL on VERTICAL at (${pos.x}, ${pos.y}, ${pos.z})`);
-              break;
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              // Check if this position has sufficient support from ANY vertical cylinder at this Z
+              if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.length,
+                  zMin: pos.z, zMax: pos.z + cyl.diameter,
+                });
+                console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL on VERTICAL at (${pos.x}, ${pos.y}, ${pos.z})`);
+              }
             }
           }
         }
@@ -593,6 +592,82 @@ export class OptimizedCoilSolver {
                   });
                   console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (final) at (${pos.x}, ${pos.y}, ${pos.z})`);
                   found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ULTRA-FINAL pass: specifically try placing on top of vertical cylinders at exact Z levels
+    const ultraFinalUnplaced = sorted.filter(c => !c.placed);
+    if (ultraFinalUnplaced.length > 0) {
+      console.log(`  Ultra-final pass: ${ultraFinalUnplaced.length} remaining`);
+
+      // Get all unique Z levels from vertical cylinders
+      const verticalTops: number[] = [];
+      for (const box of placedBoxes) {
+        const boxW = box.xMax - box.xMin;
+        const boxL = box.yMax - box.yMin;
+        if (Math.abs(boxW - boxL) < 10) { // Vertical cylinder
+          if (!verticalTops.includes(box.zMax)) {
+            verticalTops.push(box.zMax);
+          }
+        }
+      }
+      verticalTops.sort((a, b) => a - b);
+      console.log(`    Vertical tops found: ${verticalTops.join(', ')}`);
+
+      for (const cyl of ultraFinalUnplaced) {
+        let found = false;
+
+        // Try horizontal at each vertical cylinder top
+        for (const z of verticalTops) {
+          if (z + cyl.diameter > this.H || found) continue;
+
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.length,
+                    zMin: pos.z, zMax: pos.z + cyl.diameter,
+                  });
+                  console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+
+        // Also try vertical stacking on other verticals
+        if (!found && cyl.length <= this.H) {
+          for (const z of verticalTops) {
+            if (z + cyl.length > this.H || found) continue;
+
+            for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
+              for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+                const pos = { x, y, z };
+                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (this.hasVerticalSupport(pos, cyl.diameter, placedBoxes)) {
+                    const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                    placed.push(placedCyl);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: pos.x, xMax: pos.x + cyl.diameter,
+                      yMin: pos.y, yMax: pos.y + cyl.diameter,
+                      zMin: pos.z, zMax: pos.z + cyl.length,
+                    });
+                    console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                    found = true;
+                  }
                 }
               }
             }
@@ -803,6 +878,78 @@ export class OptimizedCoilSolver {
                     zMin: pos.z, zMax: pos.z + cyl.length,
                   });
                   found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ULTRA-FINAL: try placing on exact vertical tops
+    const ultraRemaining = allCylinders.filter(c => !c.placed);
+    if (ultraRemaining.length > 0) {
+      console.log(`  Ultra-final pass: ${ultraRemaining.length} remaining`);
+
+      const verticalTops: number[] = [];
+      for (const box of placedBoxes) {
+        const boxW = box.xMax - box.xMin;
+        const boxL = box.yMax - box.yMin;
+        if (Math.abs(boxW - boxL) < 10) {
+          if (!verticalTops.includes(box.zMax)) {
+            verticalTops.push(box.zMax);
+          }
+        }
+      }
+      verticalTops.sort((a, b) => a - b);
+
+      for (const cyl of ultraRemaining) {
+        let found = false;
+
+        for (const z of verticalTops) {
+          if (z + cyl.diameter > this.H || found) continue;
+
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCylinder = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCylinder);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.length,
+                    zMin: pos.z, zMax: pos.z + cyl.diameter,
+                  });
+                  console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (!found && cyl.length <= this.H) {
+          for (const z of verticalTops) {
+            if (z + cyl.length > this.H || found) continue;
+
+            for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
+              for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+                const pos = { x, y, z };
+                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (this.hasVerticalSupport(pos, cyl.diameter, placedBoxes)) {
+                    const placedCylinder = this.createVerticalPlacedCylinder(cyl, pos);
+                    placed.push(placedCylinder);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: pos.x, xMax: pos.x + cyl.diameter,
+                      yMin: pos.y, yMax: pos.y + cyl.diameter,
+                      zMin: pos.z, zMax: pos.z + cyl.length,
+                    });
+                    console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                    found = true;
+                  }
                 }
               }
             }
@@ -1837,16 +1984,19 @@ export class OptimizedCoilSolver {
 
       if (isVerticalBox) {
         // Collision: new HORIZONTAL vs existing VERTICAL
-        // Use bounding box check for Z overlap, then XY circle vs X range
-
         // First check if bounding boxes overlap at all
         if (x >= box.xMax || x + diameter <= box.xMin) continue;
         if (y >= box.yMax || y + length <= box.yMin) continue;
         if (z >= box.zMax || z + diameter <= box.zMin) continue;
 
-        // Bounding boxes overlap - check more carefully
-        // Vertical cylinder is circular in XY, horizontal is circular in XZ
-        // For safety, use conservative bounding box collision
+        // Bounding boxes overlap - but horizontal may be resting ON TOP of vertical
+        // hasSupport allows 5cm tolerance for horizontal-on-vertical stacking
+        // If bottom of horizontal (z) is at or near top of vertical (box.zMax), allow it
+        if (z >= box.zMax - 5) {
+          continue; // Horizontal resting on top of vertical - not a collision
+        }
+
+        // Horizontal cylinder passing through vertical - actual collision
         return false;
       } else {
         // Collision: new HORIZONTAL vs existing HORIZONTAL
