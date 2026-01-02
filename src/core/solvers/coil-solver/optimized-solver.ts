@@ -91,11 +91,25 @@ export class OptimizedCoilSolver {
       const result = strategy();
 
       // Track boxes for potential further optimization
-      const placedBoxes: PlacedBox[] = result.placed.map(p => ({
-        xMin: p.position.x, xMax: p.position.x + p.radius * 2,
-        yMin: p.position.y, yMax: p.position.y + p.length,
-        zMin: p.position.z, zMax: p.position.z + p.radius * 2,
-      }));
+      // IMPORTANT: Handle orientation correctly!
+      const placedBoxes: PlacedBox[] = result.placed.map(p => {
+        const isVertical = p.orientation === 'vertical';
+        if (isVertical) {
+          // Vertical: diameter in X and Y, length in Z
+          return {
+            xMin: p.position.x, xMax: p.position.x + p.radius * 2,
+            yMin: p.position.y, yMax: p.position.y + p.radius * 2,
+            zMin: p.position.z, zMax: p.position.z + p.length,
+          };
+        } else {
+          // Horizontal: diameter in X and Z, length in Y
+          return {
+            xMin: p.position.x, xMax: p.position.x + p.radius * 2,
+            yMin: p.position.y, yMax: p.position.y + p.length,
+            zMin: p.position.z, zMax: p.position.z + p.radius * 2,
+          };
+        }
+      });
 
       if (!bestResult || result.placed.length > bestResult.placed.length) {
         bestResult = { ...result, placedBoxes };
