@@ -1823,29 +1823,53 @@ export class OptimizedCoilSolver {
     if (y < 0 || y + length > this.L) return false;
     if (z < 0 || z + diameter > this.H) return false;
 
-    // Center of new cylinder in XZ plane
+    // Center of new HORIZONTAL cylinder in XZ plane
     const cx = x + radius;
     const cz = z + radius;
 
-    // Check collision with each placed cylinder using circular cross-section
+    // Check collision with each placed item
     for (const box of placed) {
-      // First check Y overlap (bounding box style - cylinders along Y)
-      if (y >= box.yMax || y + length <= box.yMin) {
-        continue; // No Y overlap, no collision possible
-      }
+      const boxW = box.xMax - box.xMin;
+      const boxH = box.zMax - box.zMin;
 
-      // Y overlaps, now check XZ circular collision
-      const otherRadius = (box.xMax - box.xMin) / 2;
-      const otherCx = box.xMin + otherRadius;
-      const otherCz = box.zMin + otherRadius;
+      // Detect if this box is a VERTICAL cylinder (height > width significantly)
+      const isVerticalBox = boxH > boxW * 1.5;
 
-      const dx = cx - otherCx;
-      const dz = cz - otherCz;
-      const distSq = dx * dx + dz * dz;
-      const minDist = radius + otherRadius - 1; // 1cm tolerance for touching
+      if (isVerticalBox) {
+        // Collision: new HORIZONTAL vs existing VERTICAL
+        // Use bounding box check for Z overlap, then XY circle vs X range
 
-      if (distSq < minDist * minDist) {
-        return false; // Circular cross-sections overlap
+        // First check if bounding boxes overlap at all
+        if (x >= box.xMax || x + diameter <= box.xMin) continue;
+        if (y >= box.yMax || y + length <= box.yMin) continue;
+        if (z >= box.zMax || z + diameter <= box.zMin) continue;
+
+        // Bounding boxes overlap - check more carefully
+        // Vertical cylinder is circular in XY, horizontal is circular in XZ
+        // For safety, use conservative bounding box collision
+        return false;
+      } else {
+        // Collision: new HORIZONTAL vs existing HORIZONTAL
+        // Both are circular in XZ plane, extended in Y
+
+        // First check Y overlap
+        if (y >= box.yMax || y + length <= box.yMin) {
+          continue; // No Y overlap, no collision possible
+        }
+
+        // Y overlaps, now check XZ circular collision
+        const otherRadius = boxW / 2;
+        const otherCx = box.xMin + otherRadius;
+        const otherCz = box.zMin + otherRadius;
+
+        const dx = cx - otherCx;
+        const dz = cz - otherCz;
+        const distSq = dx * dx + dz * dz;
+        const minDist = radius + otherRadius - 1; // 1cm tolerance for touching
+
+        if (distSq < minDist * minDist) {
+          return false; // Circular cross-sections overlap
+        }
       }
     }
 
@@ -1996,8 +2020,32 @@ export class OptimizedCoilSolver {
 
     // Check for support from cylinders below
     // Support can come from:
-    // 1. Single cylinder directly below (stacking on top)
+    // 1. Single cylinder directly below (stacking on top) - horizontal or vertical
     // 2. Two cylinders forming a valley (cylinder rests in the gap)
+
+    // FIRST: Check for support from VERTICAL cylinders (horizontal on vertical stacking)
+    for (const box of placed) {
+      const boxW = box.xMax - box.xMin;
+      const boxH = box.zMax - box.zMin;
+      const isVerticalBox = boxH > boxW * 1.5;
+
+      if (isVerticalBox) {
+        // Check if this vertical can support us
+        // Our bottom (z) should be at or near vertical's top (zMax)
+        if (Math.abs(box.zMax - z) <= 5) {
+          // Check X overlap
+          const xOverlap = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
+          // Check Y overlap (vertical has small Y extent = diameter)
+          const yOverlap = Math.min(y + length, box.yMax) - Math.max(y, box.yMin);
+
+          // Need some overlap in both X and Y
+          if (xOverlap > 0 && yOverlap > 0) {
+            console.log(`  Support found: horizontal on vertical at z=${z}, box.zMax=${box.zMax}`);
+            return true;
+          }
+        }
+      }
+    }
 
     const supportCandidates: PlacedBox[] = [];
 
