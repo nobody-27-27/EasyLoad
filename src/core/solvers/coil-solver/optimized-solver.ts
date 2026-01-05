@@ -600,57 +600,122 @@ export class OptimizedCoilSolver {
       }
     }
 
-    // ULTRA-FINAL pass: specifically try placing on top of vertical cylinders at exact Z levels
+    // ULTRA-FINAL pass: exhaustive search at ALL Z levels including floor
     const ultraFinalUnplaced = sorted.filter(c => !c.placed);
     if (ultraFinalUnplaced.length > 0) {
       console.log(`  Ultra-final pass: ${ultraFinalUnplaced.length} remaining`);
 
-      // Get all unique Z levels from vertical cylinders
-      const verticalTops: number[] = [];
+      // Get ALL unique Z levels - floor (0) + all cylinder tops
+      const allZLevels: number[] = [0]; // ALWAYS include floor!
       for (const box of placedBoxes) {
-        const boxW = box.xMax - box.xMin;
-        const boxL = box.yMax - box.yMin;
-        if (Math.abs(boxW - boxL) < 10) { // Vertical cylinder
-          if (!verticalTops.includes(box.zMax)) {
-            verticalTops.push(box.zMax);
-          }
+        if (!allZLevels.includes(box.zMax)) {
+          allZLevels.push(box.zMax);
         }
       }
-      verticalTops.sort((a, b) => a - b);
-      console.log(`    Vertical tops found: ${verticalTops.join(', ')}`);
+      allZLevels.sort((a, b) => a - b);
+      console.log(`    All Z levels to try: ${allZLevels.join(', ')}`);
 
       for (const cyl of ultraFinalUnplaced) {
         let found = false;
 
-        // Try horizontal at each vertical cylinder top
-        for (const z of verticalTops) {
-          if (z + cyl.diameter > this.H || found) continue;
+        // FIRST: Try floor level (z=0) with fine grid - this is most important!
+        console.log(`    Searching floor positions for D${cyl.diameter}...`);
+        for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCyl = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: pos.y, yMax: pos.y + cyl.length,
+                zMin: 0, zMax: cyl.diameter,
+              });
+              console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (floor) at (${pos.x}, ${pos.y}, 0)`);
+              found = true;
+            }
+          }
+        }
 
-          for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+        // SECOND: Try vertical at floor level
+        if (!found && cyl.length <= this.H) {
+          console.log(`    Searching vertical floor positions for D${cyl.diameter}...`);
+          for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
             for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
-              const pos = { x, y, z };
-              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                  const placedCyl = this.createPlacedCylinder(cyl, pos);
-                  placed.push(placedCyl);
-                  cyl.placed = true;
-                  placedBoxes.push({
-                    xMin: pos.x, xMax: pos.x + cyl.diameter,
-                    yMin: pos.y, yMax: pos.y + cyl.length,
-                    zMin: pos.z, zMax: pos.z + cyl.diameter,
-                  });
-                  console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
-                  found = true;
+              const pos = { x, y, z: 0 };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.length,
+                });
+                console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (floor) at (${pos.x}, ${pos.y}, 0)`);
+                found = true;
+              }
+            }
+          }
+        }
+
+        // THIRD: Try rotated horizontal (length along X instead of Y) at floor
+        if (!found && cyl.length <= this.W) {
+          console.log(`    Searching rotated horizontal for D${cyl.diameter}...`);
+          for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
+            for (let x = 0; x + cyl.length <= this.W && !found; x += 2) {
+              const pos = { x, y, z: 0 };
+              // For rotated: length is along X, diameter is along Y
+              if (this.canPlaceRotated(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createRotatedPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.length,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.diameter,
+                });
+                console.log(`  ${cyl.item.name} D${cyl.diameter}: ROTATED HORIZONTAL at (${pos.x}, ${pos.y}, 0)`);
+                found = true;
+              }
+            }
+          }
+        }
+
+        // FOURTH: Try stacking at other Z levels
+        if (!found) {
+          for (const z of allZLevels) {
+            if (z === 0 || found) continue; // Already tried floor
+            if (z + cyl.diameter > this.H) continue;
+
+            for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+              for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+                const pos = { x, y, z };
+                if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                    const placedCyl = this.createPlacedCylinder(cyl, pos);
+                    placed.push(placedCyl);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: pos.x, xMax: pos.x + cyl.diameter,
+                      yMin: pos.y, yMax: pos.y + cyl.length,
+                      zMin: pos.z, zMax: pos.z + cyl.diameter,
+                    });
+                    console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (stacked) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                    found = true;
+                  }
                 }
               }
             }
           }
         }
 
-        // Also try vertical stacking on other verticals
+        // FIFTH: Try vertical stacking
         if (!found && cyl.length <= this.H) {
-          for (const z of verticalTops) {
-            if (z + cyl.length > this.H || found) continue;
+          for (const z of allZLevels) {
+            if (z === 0 || found) continue;
+            if (z + cyl.length > this.H) continue;
 
             for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
               for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
@@ -665,13 +730,17 @@ export class OptimizedCoilSolver {
                       yMin: pos.y, yMax: pos.y + cyl.diameter,
                       zMin: pos.z, zMax: pos.z + cyl.length,
                     });
-                    console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                    console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (stacked) at (${pos.x}, ${pos.y}, ${pos.z})`);
                     found = true;
                   }
                 }
               }
             }
           }
+        }
+
+        if (!found) {
+          console.log(`    FAILED to place ${cyl.item.name} D${cyl.diameter}x${cyl.length}`);
         }
       }
     }
@@ -886,53 +955,117 @@ export class OptimizedCoilSolver {
       }
     }
 
-    // ULTRA-FINAL: try placing on exact vertical tops
+    // ULTRA-FINAL: exhaustive search at ALL Z levels including floor
     const ultraRemaining = allCylinders.filter(c => !c.placed);
     if (ultraRemaining.length > 0) {
       console.log(`  Ultra-final pass: ${ultraRemaining.length} remaining`);
 
-      const verticalTops: number[] = [];
+      // Include floor (0) and all cylinder tops
+      const allZLevels: number[] = [0];
       for (const box of placedBoxes) {
-        const boxW = box.xMax - box.xMin;
-        const boxL = box.yMax - box.yMin;
-        if (Math.abs(boxW - boxL) < 10) {
-          if (!verticalTops.includes(box.zMax)) {
-            verticalTops.push(box.zMax);
-          }
+        if (!allZLevels.includes(box.zMax)) {
+          allZLevels.push(box.zMax);
         }
       }
-      verticalTops.sort((a, b) => a - b);
+      allZLevels.sort((a, b) => a - b);
 
       for (const cyl of ultraRemaining) {
         let found = false;
 
-        for (const z of verticalTops) {
-          if (z + cyl.diameter > this.H || found) continue;
+        // FIRST: Try floor level horizontal
+        for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCylinder = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCylinder);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + cyl.diameter,
+                yMin: pos.y, yMax: pos.y + cyl.length,
+                zMin: 0, zMax: cyl.diameter,
+              });
+              console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (floor) at (${pos.x}, ${pos.y}, 0)`);
+              found = true;
+            }
+          }
+        }
 
-          for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+        // SECOND: Try floor level vertical
+        if (!found && cyl.length <= this.H) {
+          for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
             for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
-              const pos = { x, y, z };
-              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                  const placedCylinder = this.createPlacedCylinder(cyl, pos);
-                  placed.push(placedCylinder);
-                  cyl.placed = true;
-                  placedBoxes.push({
-                    xMin: pos.x, xMax: pos.x + cyl.diameter,
-                    yMin: pos.y, yMax: pos.y + cyl.length,
-                    zMin: pos.z, zMax: pos.z + cyl.diameter,
-                  });
-                  console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
-                  found = true;
+              const pos = { x, y, z: 0 };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCylinder = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCylinder);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.length,
+                });
+                console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (floor) at (${pos.x}, ${pos.y}, 0)`);
+                found = true;
+              }
+            }
+          }
+        }
+
+        // THIRD: Try rotated horizontal at floor
+        if (!found && cyl.length <= this.W) {
+          for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
+            for (let x = 0; x + cyl.length <= this.W && !found; x += 2) {
+              const pos = { x, y, z: 0 };
+              if (this.canPlaceRotated(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCylinder = this.createRotatedPlacedCylinder(cyl, pos);
+                placed.push(placedCylinder);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.length,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.diameter,
+                });
+                console.log(`  ${cyl.item.name} D${cyl.diameter}: ROTATED HORIZONTAL at (${pos.x}, ${pos.y}, 0)`);
+                found = true;
+              }
+            }
+          }
+        }
+
+        // FOURTH: Try stacking at other Z levels
+        if (!found) {
+          for (const z of allZLevels) {
+            if (z === 0 || found) continue;
+            if (z + cyl.diameter > this.H) continue;
+
+            for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+              for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+                const pos = { x, y, z };
+                if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                    const placedCylinder = this.createPlacedCylinder(cyl, pos);
+                    placed.push(placedCylinder);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: pos.x, xMax: pos.x + cyl.diameter,
+                      yMin: pos.y, yMax: pos.y + cyl.length,
+                      zMin: pos.z, zMax: pos.z + cyl.diameter,
+                    });
+                    console.log(`  ${cyl.item.name} D${cyl.diameter}: HORIZONTAL (stacked) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                    found = true;
+                  }
                 }
               }
             }
           }
         }
 
+        // FIFTH: Try vertical stacking
         if (!found && cyl.length <= this.H) {
-          for (const z of verticalTops) {
-            if (z + cyl.length > this.H || found) continue;
+          for (const z of allZLevels) {
+            if (z === 0 || found) continue;
+            if (z + cyl.length > this.H) continue;
 
             for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
               for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
@@ -947,13 +1080,17 @@ export class OptimizedCoilSolver {
                       yMin: pos.y, yMax: pos.y + cyl.diameter,
                       zMin: pos.z, zMax: pos.z + cyl.length,
                     });
-                    console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (ultra-final) at (${pos.x}, ${pos.y}, ${pos.z})`);
+                    console.log(`  ${cyl.item.name} D${cyl.diameter}: VERTICAL (stacked) at (${pos.x}, ${pos.y}, ${pos.z})`);
                     found = true;
                   }
                 }
               }
             }
           }
+        }
+
+        if (!found) {
+          console.log(`    FAILED to place ${cyl.item.name} D${cyl.diameter}x${cyl.length}`);
         }
       }
     }
@@ -2651,6 +2788,97 @@ export class OptimizedCoilSolver {
       layerId: Math.floor(pos.z / 50),
       supportedBy: [],
     };
+  }
+
+  /**
+   * Create a rotated horizontal cylinder (length along X instead of Y)
+   */
+  private createRotatedPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
+    const radius = cyl.diameter / 2;
+
+    return {
+      item: cyl.item,
+      uniqueId: `cyl_${cyl.index}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      center: {
+        x: pos.x + cyl.length / 2,
+        y: pos.y + radius,
+        z: pos.z + radius,
+      },
+      radius,
+      length: cyl.length,
+      orientation: 'horizontal-x',
+      rotation: ORIENTATION_ROTATIONS['horizontal-x'],
+      layerId: Math.floor(pos.z / 50),
+      supportedBy: [],
+    };
+  }
+
+  /**
+   * Check if a rotated horizontal cylinder (length along X) can be placed
+   */
+  private canPlaceRotated(
+    pos: { x: number; y: number; z: number },
+    diameter: number, length: number,
+    placed: PlacedBox[]
+  ): boolean {
+    const { x, y, z } = pos;
+    const radius = diameter / 2;
+
+    // Check container bounds (rotated: length along X, diameter along Y and Z)
+    if (x < 0 || x + length > this.W) return false;
+    if (y < 0 || y + diameter > this.L) return false;
+    if (z < 0 || z + diameter > this.H) return false;
+
+    // Center of rotated cylinder in YZ plane
+    const cy = y + radius;
+    const cz = z + radius;
+
+    // Check collision with each placed item
+    for (const box of placed) {
+      // Check X overlap first (our length is along X)
+      if (x >= box.xMax || x + length <= box.xMin) continue;
+
+      const boxW = box.xMax - box.xMin;
+      const boxL = box.yMax - box.yMin;
+      const boxH = box.zMax - box.zMin;
+
+      // Detect box type
+      const isVerticalBox = boxH > boxW * 1.5 && boxH > boxL * 1.5;
+      const isRotatedHorizontal = boxW > boxL * 1.5; // Length along X
+
+      if (isVerticalBox) {
+        // Vertical cylinder collision
+        if (y >= box.yMax || y + diameter <= box.yMin) continue;
+        if (z >= box.zMax || z + diameter <= box.zMin) continue;
+        // Allow resting on top
+        if (z >= box.zMax - 5) continue;
+        return false;
+      } else if (isRotatedHorizontal) {
+        // Another rotated horizontal - both circular in YZ
+        if (y >= box.yMax || y + diameter <= box.yMin) continue;
+        if (z >= box.zMax || z + diameter <= box.zMin) continue;
+
+        const otherR = boxL / 2;
+        const otherCy = box.yMin + otherR;
+        const otherCz = box.zMin + otherR;
+
+        const dy = cy - otherCy;
+        const dz = cz - otherCz;
+        const distSq = dy * dy + dz * dz;
+        const minDist = radius + otherR - 1;
+
+        if (distSq < minDist * minDist) return false;
+      } else {
+        // Normal horizontal (length along Y) - circular in XZ
+        if (y >= box.yMax || y + diameter <= box.yMin) continue;
+        if (z >= box.zMax || z + diameter <= box.zMin) continue;
+        // Conservative bounding box for cross-orientation
+        return false;
+      }
+    }
+
+    return true;
   }
 
   private calcStats(placed: PlacedCylinder[], failed: number): PackingStatistics {
