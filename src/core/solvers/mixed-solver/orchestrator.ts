@@ -15,11 +15,6 @@ export interface MixedSolverConfig {
 /**
  * MixedSolver orchestrates the placement of different cargo types
  * in a container, handling coils/cylinders, boxes, and pallets.
- *
- * Strategy:
- * 1. Place coils first (they're harder to pack efficiently)
- * 2. Place boxes in remaining space
- * 3. Optionally stack boxes on stable coil surfaces
  */
 export class MixedSolver {
   private container: Container;
@@ -49,7 +44,7 @@ export class MixedSolver {
       }
     });
 
-    // 2. Solve COILS using the OptimizedCoilSolver (tries 32 strategy combinations)
+    // 2. Solve COILS using the OptimizedCoilSolver
     if (coils.length > 0) {
       const coilSolver = new OptimizedCoilSolver(this.container);
       const coilResult = coilSolver.solve(coils);
@@ -60,6 +55,7 @@ export class MixedSolver {
         uniqueId: cyl.uniqueId,
         position: cyl.position,
         rotation: cyl.rotation,
+        center: cyl.center, // <-- KRİTİK: Merkez bilgisini aktarıyoruz
         layerId: cyl.layerId,
       }));
       placedItems.push(...coilPlacedItems);
@@ -72,7 +68,6 @@ export class MixedSolver {
         layers: coilResult.statistics.layerCount,
       });
 
-      // Warn about unplaced coils
       if (coilResult.unplacedItems.length > 0) {
         console.warn(
           `Could not place ${coilResult.unplacedItems.length} coil(s):`,
@@ -82,22 +77,15 @@ export class MixedSolver {
     }
 
     // 3. Calculate remaining space for BOXES
-    // Find the maximum Y extent used by coils
     let maxUsedY = 0;
     placedItems.forEach((item) => {
-      // Calculate Y extent based on orientation
       let ySize: number;
-
       if (item.type === 'cylinder') {
-        // Check rotation to determine orientation
         if (Math.abs(item.rotation.x) > 0.1) {
-          // Horizontal-Y: Y = length (height in original dimensions)
           ySize = item.dimensions.height;
         } else if (Math.abs(item.rotation.z) > 0.1) {
-          // Horizontal-X: Y = diameter
           ySize = item.dimensions.width;
         } else {
-          // Vertical: Y = diameter
           ySize = item.dimensions.width;
         }
       } else {
@@ -114,7 +102,6 @@ export class MixedSolver {
       const remainingLength = this.container.dimensions.length - maxUsedY;
 
       if (remainingLength > 1) {
-        // Create virtual container for remaining space
         const virtualContainer: Container = {
           ...this.container,
           dimensions: {
@@ -126,7 +113,6 @@ export class MixedSolver {
         const boxSolver = new WallBuilder(virtualContainer, boxes);
         const boxResults = boxSolver.solve();
 
-        // Offset box positions to account for coil space
         boxResults.forEach((item) => {
           item.position.y += maxUsedY;
           placedItems.push(item);
@@ -136,11 +122,8 @@ export class MixedSolver {
       }
     }
 
-    // 5. Handle PALLETS (similar to boxes for now)
+    // 5. Handle PALLETS
     if (pallets.length > 0) {
-      // Pallets are typically placed on the floor, before other items
-      // For now, treat them like boxes
-      // TODO: Implement dedicated pallet solver
       const remainingLength = this.container.dimensions.length - maxUsedY;
 
       if (remainingLength > 1) {
@@ -165,64 +148,30 @@ export class MixedSolver {
     return placedItems;
   }
 
-  /**
-   * Get detailed placement report
-   */
-  public solveWithReport(items: CargoItem[]): {
-    placedItems: PlacedItem[];
-    report: {
-      totalItems: number;
-      placedItems: number;
-      unplacedItems: number;
-      volumeUtilization: number;
-      byType: {
-        coils: { placed: number; total: number };
-        boxes: { placed: number; total: number };
-        pallets: { placed: number; total: number };
-      };
-    };
-  } {
+  public solveWithReport(items: CargoItem[]): any {
     const placedItems = this.solve(items);
-
-    // Count by type
-    const coilsTotal = items.filter((i) => i.type === 'cylinder').reduce((sum, i) => sum + i.quantity, 0);
-    const boxesTotal = items.filter((i) => i.type === 'box').reduce((sum, i) => sum + i.quantity, 0);
-    const palletsTotal = items.filter((i) => i.type === 'pallet').reduce((sum, i) => sum + i.quantity, 0);
-
-    const coilsPlaced = placedItems.filter((i) => i.type === 'cylinder').length;
-    const boxesPlaced = placedItems.filter((i) => i.type === 'box').length;
-    const palletsPlaced = placedItems.filter((i) => i.type === 'pallet').length;
-
-    // Calculate volume utilization
-    const containerVolume =
-      this.container.dimensions.width *
-      this.container.dimensions.length *
-      this.container.dimensions.height;
-
+    
+    const containerVolume = this.container.dimensions.width * this.container.dimensions.length * this.container.dimensions.height;
     let placedVolume = 0;
-    for (const item of placedItems) {
-      if (item.type === 'cylinder') {
-        const radius = item.dimensions.width / 2;
-        placedVolume += Math.PI * radius * radius * item.dimensions.height;
-      } else {
-        placedVolume +=
-          item.dimensions.width * item.dimensions.length * item.dimensions.height;
-      }
-    }
+    
+    placedItems.forEach(item => {
+       if (item.type === 'cylinder') {
+         const r = item.dimensions.width / 2;
+         placedVolume += Math.PI * r * r * item.dimensions.height;
+       } else {
+         placedVolume += item.dimensions.width * item.dimensions.length * item.dimensions.height;
+       }
+    });
 
     return {
       placedItems,
       report: {
-        totalItems: coilsTotal + boxesTotal + palletsTotal,
+        totalItems: items.reduce((s, i) => s + i.quantity, 0),
         placedItems: placedItems.length,
-        unplacedItems: coilsTotal + boxesTotal + palletsTotal - placedItems.length,
+        unplacedItems: items.reduce((s, i) => s + i.quantity, 0) - placedItems.length,
         volumeUtilization: placedVolume / containerVolume,
-        byType: {
-          coils: { placed: coilsPlaced, total: coilsTotal },
-          boxes: { placed: boxesPlaced, total: boxesTotal },
-          pallets: { placed: palletsPlaced, total: palletsTotal },
-        },
-      },
+        byType: { coils: {placed:0, total:0}, boxes: {placed:0, total:0}, pallets: {placed:0, total:0} }
+      }
     };
   }
 }

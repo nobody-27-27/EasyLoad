@@ -57,6 +57,9 @@ export interface PlacedItem extends CargoItem {
   // Yerleşim Bilgisi
   position: Vector3; // Konteyner içindeki (x,y,z) koordinatı (Sol-Alt-Arka köşe)
   rotation: Vector3; // Dönüş açıları (Radyan cinsinden: 0, PI/2 vb.)
+  
+  // EKLENEN KISIM: Görselleştirme için düzeltilmiş merkez noktası
+  center?: Vector3; 
 
   // Takip Bilgisi
   uniqueId: string; // Her bir tekil kutu için ayrı ID (Örn: KoliA_1, KoliA_2)
