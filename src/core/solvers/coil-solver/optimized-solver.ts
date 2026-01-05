@@ -204,6 +204,50 @@ export class OptimizedCoilSolver {
       bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
     }
 
+    // SUPER-FINAL: If still unplaced, try aggressive placement with step=1 on all Z levels
+    if (bestResult!.unplaced.length > 0) {
+      const superFinalUnplaced = all.filter(c => !c.placed);
+      console.log(`Super-final aggressive pass for ${superFinalUnplaced.length} unplaced cylinders`);
+
+      for (const cyl of superFinalUnplaced) {
+        const result = this.tryAggressivePlacement(cyl, bestResult!.placedBoxes);
+        if (result) {
+          console.log(`  ${cyl.item.name} D${cyl.diameter}: AGGRESSIVE ${result.orientation.toUpperCase()} at (${result.pos.x}, ${result.pos.y}, ${result.pos.z})`);
+
+          if (result.orientation === 'horizontal-y') {
+            const placedCyl = this.createPlacedCylinder(cyl, result.pos);
+            bestResult!.placed.push(placedCyl);
+            bestResult!.placedBoxes.push({
+              xMin: result.pos.x, xMax: result.pos.x + cyl.diameter,
+              yMin: result.pos.y, yMax: result.pos.y + cyl.length,
+              zMin: result.pos.z, zMax: result.pos.z + cyl.diameter,
+            });
+          } else if (result.orientation === 'vertical') {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, result.pos);
+            bestResult!.placed.push(placedCyl);
+            bestResult!.placedBoxes.push({
+              xMin: result.pos.x, xMax: result.pos.x + cyl.diameter,
+              yMin: result.pos.y, yMax: result.pos.y + cyl.diameter,
+              zMin: result.pos.z, zMax: result.pos.z + cyl.length,
+            });
+          } else {
+            const placedCyl = this.createRotatedPlacedCylinder(cyl, result.pos);
+            bestResult!.placed.push(placedCyl);
+            bestResult!.placedBoxes.push({
+              xMin: result.pos.x, xMax: result.pos.x + cyl.length,
+              yMin: result.pos.y, yMax: result.pos.y + cyl.diameter,
+              zMin: result.pos.z, zMax: result.pos.z + cyl.diameter,
+            });
+          }
+          cyl.placed = true;
+        } else {
+          console.log(`  ${cyl.item.name} D${cyl.diameter}: AGGRESSIVE FAILED`);
+        }
+      }
+
+      bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+
     const { placed, unplaced } = bestResult!;
 
     console.log(`Placed: ${placed.length}/${all.length}`);
@@ -1556,6 +1600,103 @@ export class OptimizedCoilSolver {
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     console.log(`  Vertical priority result: ${placed.length} placed, ${unplaced.length} unplaced`);
     return { placed, unplaced };
+  }
+
+  /**
+   * Aggressive placement - tries ALL positions at step=1 for a single cylinder
+   * Used as final fallback when main strategies leave 1-2 unplaced
+   */
+  private tryAggressivePlacement(
+    cyl: Cylinder,
+    placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'vertical' | 'horizontal-x' } | null {
+    const { diameter, length } = cyl;
+
+    console.log(`    Aggressive search for D${diameter} L${length}...`);
+
+    // Collect ALL Z levels
+    const zLevels: number[] = [0];
+    for (const box of placedBoxes) {
+      if (!zLevels.includes(box.zMax)) {
+        zLevels.push(box.zMax);
+      }
+    }
+    zLevels.sort((a, b) => a - b);
+    console.log(`    Z levels: ${zLevels.slice(0, 10).join(', ')}${zLevels.length > 10 ? '...' : ''}`);
+
+    // 1. Try horizontal-Y at EVERY Z level with step=1
+    for (const z of zLevels) {
+      if (z + diameter > this.H) continue;
+
+      for (let y = 0; y + length <= this.L; y += 1) {
+        for (let x = 0; x + diameter <= this.W; x += 1) {
+          const pos = { x, y, z };
+          if (this.canPlace(pos, diameter, length, placedBoxes)) {
+            if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+              console.log(`    Found horizontal-Y at z=${z}`);
+              return { pos, orientation: 'horizontal-y' };
+            }
+          }
+        }
+      }
+    }
+
+    // 2. Try horizontal-X at EVERY Z level
+    if (length <= this.W) {
+      for (const z of zLevels) {
+        if (z + diameter > this.H) continue;
+
+        for (let y = 0; y + diameter <= this.L; y += 1) {
+          for (let x = 0; x + length <= this.W; x += 1) {
+            const pos = { x, y, z };
+            if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
+              if (z === 0 || this.hasRotatedSupportRelaxed(pos, diameter, length, placedBoxes)) {
+                console.log(`    Found horizontal-X at z=${z}`);
+                return { pos, orientation: 'horizontal-x' };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Try vertical at EVERY Z level
+    if (length <= this.H) {
+      for (const z of zLevels) {
+        if (z + length > this.H) continue;
+
+        for (let y = 0; y + diameter <= this.L; y += 1) {
+          for (let x = 0; x + diameter <= this.W; x += 1) {
+            const pos = { x, y, z };
+            if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
+              if (z === 0 || this.hasVerticalSupportRelaxed(pos, diameter, placedBoxes)) {
+                console.log(`    Found vertical at z=${z}`);
+                return { pos, orientation: 'vertical' };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Try ANY Z position (not just tops of boxes) with floor support
+    console.log(`    Trying arbitrary Z positions...`);
+    for (let z = 1; z + diameter <= this.H; z += 1) {
+      for (let y = 0; y + length <= this.L; y += 1) {
+        for (let x = 0; x + diameter <= this.W; x += 1) {
+          const pos = { x, y, z };
+          if (this.canPlace(pos, diameter, length, placedBoxes)) {
+            if (this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+              console.log(`    Found horizontal-Y at arbitrary z=${z}`);
+              return { pos, orientation: 'horizontal-y' };
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`    No position found for D${diameter} L${length}`);
+    return null;
   }
 
   /**
