@@ -79,12 +79,12 @@ export const CargoItemView: React.FC<Props> = ({ item }) => {
     ];
   }
 
-  // Rotasyon (Array formatında)
-  const rotation: [number, number, number] = [
-    item.rotation.x,
-    item.rotation.y,
-    item.rotation.z
-  ];
+// Rotasyon (Array formatında - Güvenli Erişim)
+const rotation: [number, number, number] = [
+  Number(item.rotation?.x || 0),
+  Number(item.rotation?.y || 0),
+  Number(item.rotation?.z || 0)
+];
 
   // Boyutlar
   // Rulo için: width=çap, height=boy
