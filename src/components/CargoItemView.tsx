@@ -12,10 +12,8 @@ export const CargoItemView: React.FC<Props> = ({ item }) => {
   const meshRef = useRef<THREE.Mesh>(null);
   const [hovered, setHover] = React.useState(false);
 
-  // Güvenlik kontrolü
   if (!item) return null;
 
-  // Renk seçimi
   const color = useMemo(() => {
     if (item.color && item.color !== '#cccccc') return item.color;
     const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
@@ -27,75 +25,57 @@ export const CargoItemView: React.FC<Props> = ({ item }) => {
     return colors[Math.abs(hash) % colors.length];
   }, [item.id, item.uniqueId, item.color]);
 
-  // Three.js için Pozisyon Hesaplama
-  let position: [number, number, number];
+  // Position Logic
+  let posX = 0, posY = 0, posZ = 0;
 
   if (item.center) {
-    // Solver tarafından hesaplanmış hazır merkez noktası
-    position = [item.center.x, item.center.y, item.center.z];
-  } else {
-    // Fallback: Eğer center yoksa manuel hesapla
-    // Three.js Koordinatları: X=Genişlik, Y=Yükseklik, Z=Derinlik
-    // Mantıksal Koordinatlar: X=Genişlik, Y=Derinlik, Z=Yükseklik
-    
-    // Varsayılan olarak (Kutular/Paletler için):
-    // Görsel X = Logic X + Yarım Genişlik
-    // Görsel Y = Logic Z + Yarım Yükseklik
-    // Görsel Z = Logic Y + Yarım Derinlik
-    
-    const width = item.dimensions.width;
-    const height = item.dimensions.height; 
-    const length = item.dimensions.length; 
+    // Use Solver's calculated center (Visual Coordinates)
+    posX = Number(item.center.x);
+    posY = Number(item.center.y);
+    posZ = Number(item.center.z);
+  } else if (item.position) {
+    // Fallback: Calculate from Corner position
+    const width = Number(item.dimensions?.width || 0);
+    const height = Number(item.dimensions?.height || 0);
+    const length = Number(item.dimensions?.length || 0);
 
-    // Rulo durumu
     let offsetX = width / 2;
-    let offsetY = height / 2; // Logic Z (Yükseklik) -> Visual Y
-    let offsetZ = length / 2; // Logic Y (Derinlik) -> Visual Z
+    let visualYOffset = height / 2;
+    let visualZOffset = length / 2;
 
     if (item.type === 'cylinder') {
        const r = width / 2;
-       // Dikey rulo (Vertical): H=length, W=D, L=D
-       if (Math.abs(item.rotation.x) < 0.1 && Math.abs(item.rotation.z) < 0.1) {
-          offsetY = item.dimensions.height / 2; // Yükseklik boyudur
-          offsetZ = r;
-       }
-       // Yatık rulo (Horizontal-Y):
-       else if (Math.abs(item.rotation.x) > 0.1) {
-          offsetY = r; // Yükseklik yarıçaptır
-          offsetZ = item.dimensions.height / 2;
-       }
-       // Yatık rulo (Horizontal-X):
-       else {
-          offsetX = item.dimensions.height / 2;
-          offsetY = r;
-          offsetZ = r;
+       const rotX = Math.abs(Number(item.rotation?.x || 0));
+       
+       if (rotX > 0.1) {
+          visualYOffset = r; 
+          visualZOffset = height / 2;
+       } else {
+          visualYOffset = height / 2;
+          visualZOffset = r;
        }
     }
 
-    position = [
-      item.position.x + offsetX,
-      item.position.z + offsetY, // Logic Z -> Visual Y (Yükseklik)
-      item.position.y + offsetZ  // Logic Y -> Visual Z (Derinlik)
-    ];
+    posX = Number(item.position.x) + offsetX;
+    posY = Number(item.position.z) + visualYOffset; // Swap Logic Z -> Visual Y
+    posZ = Number(item.position.y) + visualZOffset; // Swap Logic Y -> Visual Z
   }
 
-// Rotasyon (Array formatında - Güvenli Erişim)
-const rotation: [number, number, number] = [
-  Number(item.rotation?.x || 0),
-  Number(item.rotation?.y || 0),
-  Number(item.rotation?.z || 0)
-];
+  const position: [number, number, number] = [posX, posY, posZ];
 
-  // Boyutlar
-  // Rulo için: width=çap, height=boy
-  const radius = item.dimensions.width / 2;
-  const cylHeight = item.dimensions.height;
+  const rotation: [number, number, number] = [
+    Number(item.rotation?.x || 0),
+    Number(item.rotation?.y || 0),
+    Number(item.rotation?.z || 0)
+  ];
 
-  // Kutu boyutları
+  const radius = Number(item.dimensions?.width || 0) / 2;
+  const cylHeight = Number(item.dimensions?.height || 0);
+  
   const boxArgs: [number, number, number] = [
-    item.dimensions.width,
-    item.dimensions.height, // Visual Y (Height)
-    item.dimensions.length  // Visual Z (Depth)
+    Number(item.dimensions?.width || 0),
+    Number(item.dimensions?.height || 0),
+    Number(item.dimensions?.length || 0)
   ];
 
   return (
@@ -112,14 +92,13 @@ const rotation: [number, number, number] = [
       >
         {item.type === 'cylinder' ? (
           <>
-            {/* Silindir: [radiusTop, radiusBottom, height, segments] */}
             <cylinderGeometry args={[radius, radius, cylHeight, 32]} />
             <meshStandardMaterial
               color={hovered ? '#ffffff' : color}
               roughness={0.5}
               metalness={0.1}
-              transparent={item.opacity !== undefined && item.opacity < 1}
-              opacity={item.opacity ?? 1}
+              opacity={Number(item.opacity ?? 1)}
+              transparent={Number(item.opacity ?? 1) < 1}
             />
             <lineSegments>
               <edgesGeometry args={[new THREE.CylinderGeometry(radius, radius, cylHeight, 32)]} />
@@ -128,7 +107,6 @@ const rotation: [number, number, number] = [
           </>
         ) : (
           <>
-            {/* Kutu */}
             <boxGeometry args={boxArgs} />
             <meshStandardMaterial color={item.type === 'pallet' ? '#d97706' : color} />
             <lineSegments>
@@ -139,12 +117,11 @@ const rotation: [number, number, number] = [
         )}
       </mesh>
 
-      {/* Etiket */}
       {hovered && (
-        <Html position={[position[0], position[1] + (item.type === 'cylinder' ? cylHeight/2 : item.dimensions.height/2) + 10, position[2]]}>
+        <Html position={[0, (item.type === 'cylinder' ? cylHeight/2 : Number(item.dimensions?.height)/2) + 10, 0]}>
           <div className="bg-black/80 text-white text-xs p-1 rounded whitespace-nowrap pointer-events-none z-50">
             {item.name} <br/>
-            {Math.round(item.dimensions.width)}x{Math.round(item.dimensions.height)}
+            {Math.round(radius*2)}x{Math.round(cylHeight)}
           </div>
         </Html>
       )}

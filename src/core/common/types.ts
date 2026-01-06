@@ -1,74 +1,45 @@
 // src/core/common/types.ts
 
-/**
- * 3D uzayda boyut tanımları.
- * cm cinsinden çalışacağız.
- */
 export interface Dimensions {
-  width: number; // X Ekseni (En)
-  length: number; // Y Ekseni (Boy/Derinlik)
-  height: number; // Z Ekseni (Yükseklik)
+  width: number;
+  length: number;
+  height: number;
 }
 
-/**
- * Uzaydaki bir noktanın veya vektörün tanımı.
- */
 export interface Vector3 {
   x: number;
   y: number;
   z: number;
 }
 
-/**
- * Yük Tipleri
- */
 export type CargoType = 'box' | 'cylinder' | 'pallet';
 
-/**
- * Kullanıcının gireceği HAM veri (Sipariş Listesi).
- */
 export interface CargoItem {
-  id: string; // Benzersiz ID (UUID)
-  name: string; // Ürün adı
-  type: CargoType; // Tip A, B, C
-  quantity: number; // Adet
-  color: string; // Görselleştirme rengi
-
-  // Fiziksel Özellikler
-  dimensions: Dimensions; // Rulo için: width=çap, length=çap, height=uzunluk
-  weight?: number; // Gelecek versiyon (v2) için hazırlık
-
-  // Kısıtlamalar
-  stackable: boolean; // Üstüne başka ürün konabilir mi?
-  maxStackWeight?: number; // Üstüne ne kadar yük binebilir? (v2)
-
+  id: string;
+  name: string;
+  type: CargoType;
+  quantity: number;
+  color: string;
+  dimensions: Dimensions;
+  weight?: number;
+  stackable: boolean;
+  maxStackWeight?: number;
   allowedRotation: {
-    x: boolean; // Devrilebilir mi? (Genelde Rulo/Koli için)
-    y: boolean; // Zemin ekseninde dönebilir mi? (90 derece)
-    z: boolean; // (Nadir kullanılır)
+    x: boolean;
+    y: boolean;
+    z: boolean;
   };
 }
 
-/**
- * Hesaplama sonucu yerleştirilmiş ürün.
- * CargoItem'ın tüm özelliklerini taşır + Koordinat bilgisi eklenir.
- */
 export interface PlacedItem extends CargoItem {
-  // Yerleşim Bilgisi
-  position: Vector3; // Konteyner içindeki (x,y,z) koordinatı (Sol-Alt-Arka köşe)
-  rotation: Vector3; // Dönüş açıları (Radyan cinsinden: 0, PI/2 vb.)
-  
-  // EKLENEN KISIM: Görselleştirme için düzeltilmiş merkez noktası
-  center?: Vector3; 
-
-  // Takip Bilgisi
-  uniqueId: string; // Her bir tekil kutu için ayrı ID (Örn: KoliA_1, KoliA_2)
-  layerId?: number; // Hangi katmanda olduğu (Opsiyonel)
+  position: Vector3;
+  rotation: Vector3;
+  // ADDED: Center point for accurate 3D positioning
+  center?: Vector3;
+  uniqueId: string;
+  layerId?: number;
 }
 
-/**
- * Araç / Konteyner Tanımı
- */
 export interface Container {
   name: string;
   type: 'Truck' | '40HC' | '40DC' | '20DC' | 'Custom';
