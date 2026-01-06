@@ -85,6 +85,7 @@ export class OptimizedCoilSolver {
       () => this.packVerticalPriority(all), // NEW: Prioritize vertical for short rolls
       () => this.packMaximizeStacking(all), // Maximize vertical stacking to save Y space
       () => this.packTightLayers(all), // Fill each Y slice completely before moving
+      () => this.packAwkwardFirst(all), // Prioritize awkward middle-size rolls first
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
@@ -1910,6 +1911,164 @@ export class OptimizedCoilSolver {
 
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     console.log(`  Tight layers result: ${placed.length} placed, ${unplaced.length} unplaced`);
+    return { placed, unplaced };
+  }
+
+  /**
+   * Pack awkward/middle-size rolls first - these are often left unplaced
+   * Targets rolls with medium diameter and longer length that don't fit well in gaps
+   */
+  private packAwkwardFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`=== AWKWARD FIRST PACKING ===`);
+
+    // Calculate "awkwardness" score - rolls that are difficult to place
+    // Awkward = medium diameter (not small to fit gaps, not large to go first) + longer length
+    const diameters = allCylinders.map(c => c.diameter);
+    const minD = Math.min(...diameters);
+    const maxD = Math.max(...diameters);
+    const avgD = (minD + maxD) / 2;
+
+    const lengths = allCylinders.map(c => c.length);
+    const avgL = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+
+    // Score: higher = more awkward (priority)
+    const scored = allCylinders.map(c => ({
+      cyl: c,
+      awkwardness: Math.abs(c.diameter - avgD) * -1 + // Close to average diameter = more awkward
+                   (c.length / avgL) * 10 // Longer = more awkward
+    }));
+
+    // Sort by awkwardness (highest first)
+    scored.sort((a, b) => b.awkwardness - a.awkwardness);
+
+    console.log(`  Awkward order: ${scored.slice(0, 5).map(s => `D${s.cyl.diameter}L${s.cyl.length.toFixed(0)}(${s.awkwardness.toFixed(1)})`).join(', ')}...`);
+
+    // Place in awkwardness order
+    for (const { cyl } of scored) {
+      if (cyl.placed) continue;
+
+      let found = false;
+
+      // Try vertical first (uses less Y space)
+      if (cyl.length <= this.H) {
+        for (let y = 0; y + cyl.diameter <= this.L && !found; y += cyl.diameter / 2) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += cyl.diameter / 2) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: x, xMax: x + cyl.diameter,
+                yMin: y, yMax: y + cyl.diameter,
+                zMin: 0, zMax: cyl.length,
+              });
+              found = true;
+            }
+          }
+        }
+      }
+
+      // Try horizontal-Y
+      if (!found) {
+        for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+            for (let z = 0; z + cyl.diameter <= this.H && !found; z += 5) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: x, xMax: x + cyl.diameter,
+                    yMin: y, yMax: y + cyl.length,
+                    zMin: z, zMax: z + cyl.diameter,
+                  });
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Try horizontal-X (rotated)
+      if (!found && cyl.length <= this.W) {
+        for (let y = 0; y + cyl.diameter <= this.L && !found; y += 5) {
+          for (let x = 0; x + cyl.length <= this.W && !found; x += 5) {
+            for (let z = 0; z + cyl.diameter <= this.H && !found; z += 5) {
+              const pos = { x, y, z };
+              if (this.canPlaceRotated(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasRotatedSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createRotatedPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: x, xMax: x + cyl.length,
+                    yMin: y, yMax: y + cyl.diameter,
+                    zMin: z, zMax: z + cyl.diameter,
+                  });
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Stack remaining on verticals
+    for (const { cyl } of scored) {
+      if (cyl.placed) continue;
+
+      if (cyl.length <= this.H) {
+        for (const box of placedBoxes) {
+          const boxW = box.xMax - box.xMin;
+          const boxL = box.yMax - box.yMin;
+          const isVertical = Math.abs(boxW - boxL) < 10 && box.zMax > boxW;
+
+          if (!isVertical) continue;
+          if (box.zMax + cyl.length > this.H) continue;
+
+          const pos = { x: box.xMin, y: box.yMin, z: box.zMax };
+          if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+              xMin: pos.x, xMax: pos.x + cyl.diameter,
+              yMin: pos.y, yMax: pos.y + cyl.diameter,
+              zMin: pos.z, zMax: pos.z + cyl.length,
+            });
+            break;
+          }
+        }
+      }
+    }
+
+    // Final exhaustive search for remaining
+    for (const cyl of allCylinders.filter(c => !c.placed)) {
+      const pos = this.exhaustiveSearch(cyl, placedBoxes);
+      if (pos) {
+        const placedCyl = this.createPlacedCylinder(cyl, pos);
+        placed.push(placedCyl);
+        cyl.placed = true;
+        placedBoxes.push({
+          xMin: pos.x, xMax: pos.x + cyl.diameter,
+          yMin: pos.y, yMax: pos.y + cyl.length,
+          zMin: pos.z, zMax: pos.z + cyl.diameter,
+        });
+      }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    console.log(`  Awkward first result: ${placed.length} placed, ${unplaced.length} unplaced`);
     return { placed, unplaced };
   }
 
