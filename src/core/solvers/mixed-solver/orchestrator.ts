@@ -40,9 +40,9 @@ export class MixedSolver {
       const coilPlacedItems = coilResult.placedCylinders.map((cyl) => ({
         ...cyl.item,
         uniqueId: cyl.uniqueId,
-        position: { ...cyl.position }, 
+        position: { ...cyl.position },
         rotation: { ...cyl.rotation },
-        center: cyl.center ? { ...cyl.center } : undefined, // Critical Fix
+        center: cyl.center ? { ...cyl.center } : undefined, // Center'ı kopyala
         layerId: cyl.layerId,
       }));
       placedItems.push(...coilPlacedItems);

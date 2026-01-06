@@ -34,8 +34,7 @@ export interface CargoItem {
 export interface PlacedItem extends CargoItem {
   position: Vector3;
   rotation: Vector3;
-  // ADDED: Center point for accurate 3D positioning
-  center?: Vector3;
+  center?: Vector3; // Center ekledik
   uniqueId: string;
   layerId?: number;
 }
