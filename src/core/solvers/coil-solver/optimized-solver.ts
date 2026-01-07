@@ -26,7 +26,6 @@ interface PlacedBox {
   zMax: number;
 }
 
-// Yeni: Dairesel çarpışma kontrolü için
 interface PlacedCircle {
   x: number;
   y: number;
@@ -62,13 +61,13 @@ export class OptimizedCoilSolver {
       }
     }
 
-    console.log(`=== CYLINDER PACKING (Advanced Circle Packing) ===`);
-    
-    // Stratejiler
+    console.log(`=== CYLINDER PACKING (Strict Manual Strategy) ===`);
+    console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
+    console.log(`Cylinders to place: ${all.length}`);
+
+    // Tek ve Kesin Strateji
     const strategies = [
-      () => this.packManualHeuristic(all), // İyileştirilmiş Manuel Strateji
-      // Diğer stratejiler yedek olarak kalsın
-      () => this.packVerticalPriority(all),
+      () => this.packManualHeuristic(all),
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
@@ -76,108 +75,132 @@ export class OptimizedCoilSolver {
     for (const strategy of strategies) {
       all.forEach(c => c.placed = false);
       const result = strategy();
-      const placedBoxes = result.placed.map(p => this.getBoxFromPlaced(p));
-
-      const realUnplacedCount = all.length - result.placed.length;
-
+      
       if (!bestResult || result.placed.length > bestResult.placed.length) {
+        const placedBoxes = result.placed.map(p => this.getBoxFromPlaced(p));
         bestResult = { ...result, placedBoxes };
       }
 
-      if (realUnplacedCount === 0) {
+      if (result.placed.length === all.length) {
         console.log("Full placement achieved!");
         break;
       }
     }
 
-    // Son kalanları zorla (Drop)
-    if (bestResult!.unplaced.length > 0) {
-      const unplacedCyls = all.filter(c => !c.placed);
-      unplacedCyls.sort((a, b) => a.diameter - b.diameter);
+    // Flagleri geri yükle
+    all.forEach(c => c.placed = false);
+    const placedItemSet = new Set(bestResult!.placed.map(p => p.item));
+    all.forEach(c => { if (placedItemSet.has(c.item)) c.placed = true; });
 
-      for (const cyl of unplacedCyls) {
-        const dropResult = this.tryDropPlacement(cyl, bestResult!.placedBoxes);
+    // Kalanları son kez dene (Aşırı Hassas - Step 1)
+    const leftovers = all.filter(c => !c.placed);
+    if (leftovers.length > 0) {
+      console.log(`Attempting to place ${leftovers.length} leftovers with precision...`);
+      leftovers.sort((a, b) => a.diameter - b.diameter);
+
+      for (const cyl of leftovers) {
+        // Hem yatay hem dikey dene
+        const dropResult = this.tryDropPlacement(cyl, bestResult!.placedBoxes, 1);
         if (dropResult) {
              this.addPlacedCylinderToResult(cyl, dropResult, bestResult!);
+             cyl.placed = true;
         } else {
              const pos = this.exhaustiveSearch(cyl, bestResult!.placedBoxes);
              if (pos) {
                this.addPlacedCylinderToResult(cyl, { pos, orientation: 'horizontal-y' }, bestResult!);
+               cyl.placed = true;
              }
         }
       }
-      bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
     }
 
-    const { placed, unplaced } = bestResult!;
-    console.log(`Placed: ${placed.length}/${all.length}`);
+    const finalPlaced = bestResult!.placed;
+    const finalUnplaced = all.filter(c => !c.placed).map(c => c.item);
+
+    console.log(`Placed: ${finalPlaced.length}/${all.length}`);
 
     return {
-      placedCylinders: placed,
-      unplacedItems: unplaced,
-      statistics: this.calcStats(placed, unplaced.length),
+      placedCylinders: finalPlaced,
+      unplacedItems: finalUnplaced,
+      statistics: this.calcStats(finalPlaced, finalUnplaced.length),
     };
   }
 
-  // --- İYİLEŞTİRİLMİŞ MANUEL STRATEJİ ---
+  // --- KESİNLEŞTİRİLMİŞ MANUEL STRATEJİ ---
   private packManualHeuristic(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-    console.log("Running Manual Heuristic with Circle Packing");
+    console.log("Running Manual Heuristic: Block 1 (24) -> Block 2 (14 Mixed) -> Tops (20 Horizontal)");
     allCylinders.forEach(c => c.placed = false);
     
     const placed: PlacedCylinder[] = [];
     const placedBoxes: PlacedBox[] = [];
-    const placedCircles: PlacedCircle[] = []; // Sadece Dikeyler için
+    const placedCircles: PlacedCircle[] = []; 
+    const placedObstacles: PlacedBox[] = []; 
 
-    // Gruplama
+    // TANIMLAR (KESİN)
     const is78x160 = (c: Cylinder) => Math.abs(c.diameter - 78) < 2 && Math.abs(c.length - 160) < 2;
-    const isMixedVertical = (c: Cylinder) => !is78x160(c) && c.length >= 130 && c.length <= 150;
+    // Blok 2 SADECE 85 ve 97'likler. 78'ler BURAYA GİREMEZ.
+    const isBlock2Vertical = (c: Cylinder) => !is78x160(c) && c.length >= 130 && c.length <= 150; 
+    
+    // Yatay Gruplar
+    // Grup 1: 10 adet 77x152 + 2 adet 78x160 (Toplam 12) -> Blok 1 üstüne
     const isHorizForBlock1 = (c: Cylinder) => (Math.abs(c.diameter - 78) < 2 && Math.abs(c.length - 160) < 2) || (Math.abs(c.diameter - 77) < 2 && Math.abs(c.length - 152) < 2);
+    // Grup 2: 8 adet 90x160 -> Blok 2 üstüne
     const isHorizForBlock2 = (c: Cylinder) => Math.abs(c.diameter - 90) < 2;
 
     const pool = [...allCylinders];
     
-    // --- ADIM 1: BLOK 1 (24 adet 78x160) ---
+    // --- ADIM 1: BLOK 1 (TAM 24 ADET 78x160 - DİKEY) ---
     let block1Count = 0;
-    // Blok 1 düzenli ızgara olabilir (Circle packing gerekmez ama eklesek zarar gelmez)
+    // 78cm * 3 = 234cm. Konteyner 235cm.
+    // 1cm adım (step) ile tam oturması lazım.
     for (let y = 0; y < this.L; y += 78) {
-        for (let x = 0; x <= this.W - 78; x += 78) {
+        for (let x = 0; x <= this.W - 78; x += 1) { // X step 1 yaptık
             if (block1Count >= 24) break;
-            const idx = pool.findIndex(c => !c.placed && is78x160(c));
-            if (idx !== -1) {
-                const cyl = pool[idx];
-                const p = this.createVerticalPlacedCylinder(cyl, { x, y, z: 0 });
-                placed.push(p);
-                placedBoxes.push(this.getBoxFromPlaced(p));
-                placedCircles.push({ x: x + cyl.diameter/2, y: y + cyl.diameter/2, r: cyl.diameter/2 });
-                cyl.placed = true;
-                block1Count++;
+            
+            // Eğer bu x,y noktasında yer varsa (öncekilerle çakışmıyorsa)
+            // Bu kontrolü `canPlace` ile değil manual grid mantığıyla yapıyoruz ama
+            // x+=1 olduğu için çakışma olabilir, o yüzden collision check şart.
+            if (this.canPlaceVerticalCircle(x, y, 78, 160, placedObstacles, placedCircles)) {
+                const idx = pool.findIndex(c => !c.placed && is78x160(c));
+                if (idx !== -1) {
+                    const cyl = pool[idx];
+                    const p = this.createVerticalPlacedCylinder(cyl, { x, y, z: 0 });
+                    placed.push(p);
+                    const box = this.getBoxFromPlaced(p);
+                    placedBoxes.push(box);
+                    placedCircles.push({ x: x + cyl.diameter/2, y: y + cyl.diameter/2, r: cyl.diameter/2 });
+                    cyl.placed = true;
+                    block1Count++;
+                    
+                    // Grid optimization: Bir tane koyduysak x'i çap kadar atlat
+                    x += (cyl.diameter - 1); 
+                }
             }
         }
         if (block1Count >= 24) break;
     }
     console.log(`Block 1 Placed: ${block1Count}/24`);
 
-    // --- ADIM 2: BLOK 2 (Karışık Dikeyler - Circle Packing) ---
-    // Blok 1 nerede bitti?
+    // --- ADIM 2: BLOK 2 (KARIŞIK DİKEYLER - NESTING ŞART) ---
+    // SADECE isBlock2Vertical (85 ve 97'ler). 78'ler buraya gelemez.
     let startYBlock2 = 0;
     placedBoxes.forEach(b => { if (b.yMax > startYBlock2) startYBlock2 = b.yMax; });
-    startYBlock2 += 1; // 1cm buffer
+    startYBlock2 += 1; // Buffer
 
-    const remainingVerticals = pool.filter(c => !c.placed && (isMixedVertical(c) || is78x160(c)));
+    const remainingVerticals = pool.filter(c => !c.placed && isBlock2Vertical(c));
     // Büyükten küçüğe sırala
     remainingVerticals.sort((a, b) => b.diameter - a.diameter);
 
     for (const cyl of remainingVerticals) {
         let found = false;
-        // HASSAS TARAMA (Step = 2cm) ve DAİRESEL KONTROL
-        // Bu sayede rulolar birbirinin arasına girebilir (stagger)
-        for (let y = startYBlock2; y + cyl.diameter <= this.L; y += 2) {
-            for (let x = 0; x + cyl.diameter <= this.W; x += 2) {
-                // Circle ve Box collision kontrolü
-                if (this.canPlaceVerticalCircle(x, y, cyl.diameter, cyl.length, placedBoxes, placedCircles)) {
+        // STEP = 1 (Hassas Nesting)
+        for (let y = startYBlock2; y + cyl.diameter <= this.L; y += 1) {
+            for (let x = 0; x + cyl.diameter <= this.W; x += 1) {
+                if (this.canPlaceVerticalCircle(x, y, cyl.diameter, cyl.length, placedObstacles, placedCircles)) {
                     const p = this.createVerticalPlacedCylinder(cyl, { x, y, z: 0 });
                     placed.push(p);
-                    placedBoxes.push(this.getBoxFromPlaced(p));
+                    const box = this.getBoxFromPlaced(p);
+                    placedBoxes.push(box); 
                     placedCircles.push({ x: x + cyl.diameter/2, y: y + cyl.diameter/2, r: cyl.diameter/2 });
                     cyl.placed = true;
                     found = true;
@@ -189,24 +212,29 @@ export class OptimizedCoilSolver {
     }
     console.log(`Block 2 finished. Vertical count: ${placed.filter(p=>p.orientation==='vertical').length}`);
 
-    // --- ADIM 3: ÜST KATMANLAR (Yatay) ---
+    // --- ADIM 3: ÜST KATMANLAR (YATAY - STEP 1) ---
     const horizontals = pool.filter(c => !c.placed);
-    const topGroup1 = horizontals.filter(c => isHorizForBlock1(c));
-    const topGroup2 = horizontals.filter(c => isHorizForBlock2(c));
+    // Büyükten küçüğe
+    horizontals.sort((a,b) => b.diameter - a.diameter);
 
-    // Top Group 1 (Blok 1 Üstü - Z > 150)
+    const topGroup1 = horizontals.filter(c => isHorizForBlock1(c)); // 77s ve 78s
+    const topGroup2 = horizontals.filter(c => isHorizForBlock2(c)); // 90s
+
+    // Top Group 1 (Blok 1 Üzerine)
     for (const cyl of topGroup1) {
         let found = false;
-        // Hassas tarama (Step=5) ki tam oluğu bulsun
-        for (let y = 0; y < startYBlock2 - cyl.length + 50; y += 5) {
-            for (let x = 0; x <= this.W - cyl.diameter; x += 5) {
+        // Blok 1 üzerinde Z > 150 ara. STEP = 1
+        for (let y = 0; y < startYBlock2; y += 1) { 
+            for (let x = 0; x <= this.W - cyl.diameter; x += 1) {
                 const drop = this.findDropZ({x, y}, cyl.diameter, cyl.length, placedBoxes);
+                // Z=160 (Blok 1) civarı kabul
                 if (drop.z >= 155 && drop.z + cyl.diameter <= this.H) {
-                    // Collision check again just to be safe
                     if (this.canPlace({x, y, z: drop.z}, cyl.diameter, cyl.length, placedBoxes)) {
                         const p = this.createPlacedCylinder(cyl, {x, y, z: drop.z});
                         placed.push(p);
-                        placedBoxes.push(this.getBoxFromPlaced(p));
+                        const box = this.getBoxFromPlaced(p);
+                        placedBoxes.push(box);
+                        placedObstacles.push(box);
                         cyl.placed = true;
                         found = true;
                         break;
@@ -217,18 +245,20 @@ export class OptimizedCoilSolver {
         }
     }
 
-    // Top Group 2 (Blok 2 Üstü - Z > 130)
+    // Top Group 2 (Blok 2 Üzerine)
     for (const cyl of topGroup2) {
         let found = false;
-        // Blok 2'nin başladığı yerden itibaren tara
-        for (let y = startYBlock2 - 50; y + cyl.length <= this.L; y += 5) {
-            for (let x = 0; x <= this.W - cyl.diameter; x += 5) {
+        // Blok 2 üzerinde Z > 130 ara. STEP = 1
+        for (let y = startYBlock2 - 50; y + cyl.length <= this.L; y += 1) {
+            for (let x = 0; x <= this.W - cyl.diameter; x += 1) {
                 const drop = this.findDropZ({x, y}, cyl.diameter, cyl.length, placedBoxes);
                 if (drop.z >= 130 && drop.z + cyl.diameter <= this.H) {
                     if (this.canPlace({x, y, z: drop.z}, cyl.diameter, cyl.length, placedBoxes)) {
                         const p = this.createPlacedCylinder(cyl, {x, y, z: drop.z});
                         placed.push(p);
-                        placedBoxes.push(this.getBoxFromPlaced(p));
+                        const box = this.getBoxFromPlaced(p);
+                        placedBoxes.push(box);
+                        placedObstacles.push(box);
                         cyl.placed = true;
                         found = true;
                         break;
@@ -239,10 +269,10 @@ export class OptimizedCoilSolver {
         }
     }
 
-    // Kalanları her yere dene
+    // Leftovers (Hala kalan varsa)
     const leftovers = pool.filter(c => !c.placed);
     for (const cyl of leftovers) {
-        const drop = this.tryDropPlacement(cyl, placedBoxes);
+        const drop = this.tryDropPlacement(cyl, placedBoxes, 1); // Step 1
         if (drop) {
              this.addPlacedCylinderToResult(cyl, drop, {placed, placedBoxes} as any);
         }
@@ -252,9 +282,9 @@ export class OptimizedCoilSolver {
     return { placed, unplaced };
   }
 
-  // --- YENİ: DAİRESEL ÇARPIŞMA (Circle Collision) ---
-  private canPlaceVerticalCircle(x: number, y: number, d: number, l: number, boxes: PlacedBox[], circles: PlacedCircle[]): boolean {
-      // 1. Sınırlar
+  // --- HELPERS ---
+
+  private canPlaceVerticalCircle(x: number, y: number, d: number, l: number, obstacles: PlacedBox[], circles: PlacedCircle[]): boolean {
       if (x < 0 || x + d > this.W) return false;
       if (y < 0 || y + d > this.L) return false;
       if (l > this.H) return false;
@@ -263,27 +293,21 @@ export class OptimizedCoilSolver {
       const cx = x + r;
       const cy = y + r;
 
-      // 2. Diğer Dairelerle Çarpışma (Staggering için kritik)
+      // Dairelerle (staggering)
       for (const c of circles) {
           const dx = cx - c.x;
           const dy = cy - c.y;
           const distSq = dx*dx + dy*dy;
-          const minR = r + c.r - 0.5; // 0.5cm tolerans
+          const minR = r + c.r - 0.1; 
           if (distSq < minR * minR) return false;
       }
 
-      // 3. Yatay Kutularla Çarpışma (AABB)
-      // Dikey bir silindir (x,y, d,d) kaplar
-      for (const b of boxes) {
-          // Eğer kutu havada ise (zMin > 0) ve biz zemindeysek (z=0), çarpışma olmaz
-          // Ama burada kutuların zemin seviyesinde olduğunu varsayıyoruz (horizontal on floor)
-          // Yüksektekilerle çarpışmayız çünkü biz 0'dayız onlar yukarıda
-          // Sadece zemindeki diğer kutularla
-          if (b.zMin < l) { // Z ekseninde çakışma varsa
+      // Yatay Engellerle
+      for (const b of obstacles) {
+          if (b.zMin < l) { 
              if (x < b.xMax && x + d > b.xMin && y < b.yMax && y + d > b.yMin) return false;
           }
       }
-
       return true;
   }
 
@@ -300,11 +324,11 @@ export class OptimizedCoilSolver {
 
   private tryDropPlacement(
     cyl: Cylinder,
-    placedBoxes: PlacedBox[]
+    placedBoxes: PlacedBox[],
+    step: number = 1
   ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'horizontal-x' } | null {
      
      const { diameter, length } = cyl;
-     const step = 5; 
 
      for (let y = 0; y + length <= this.L; y += step) {
          for (let x = 0; x + diameter <= this.W; x += step) {
@@ -320,21 +344,20 @@ export class OptimizedCoilSolver {
      return null;
   }
 
-  // Diğer metodlar (kısaltıldı)
-  private packVerticalPriority(all: Cylinder[]) { return { placed: [], unplaced: [] }; }
+  // (createPlacedCylinder, createVerticalPlacedCylinder, etc... öncekiyle aynı, buraya tam halini kopyalayabilirsiniz)
+  // Koordinat dönüşümleri (Center) korundu.
   
-  // --- CENTER ve COORDINATE DÖNÜŞÜMLERİ ---
   private createPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
     const radius = cyl.diameter / 2;
-    const uniqueId = `cyl_${cyl.index}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const uniqueId = `cyl_${cyl.index}_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
     return {
       item: cyl.item,
       uniqueId: uniqueId,
       position: { x: pos.x, y: pos.y, z: pos.z },
       center: {
         x: pos.x + radius,
-        y: pos.z + radius,         // Visual Y
-        z: pos.y + cyl.length / 2, // Visual Z
+        y: pos.z + radius,
+        z: pos.y + cyl.length / 2,
       },
       radius, length: cyl.length,
       orientation: 'horizontal-y',
@@ -346,15 +369,15 @@ export class OptimizedCoilSolver {
   
   private createVerticalPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
     const radius = cyl.diameter / 2;
-    const uniqueId = `cyl_v_${cyl.index}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const uniqueId = `cyl_v_${cyl.index}_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
     return {
       item: cyl.item,
       uniqueId: uniqueId,
       position: { x: pos.x, y: pos.y, z: pos.z },
       center: {
         x: pos.x + radius,
-        y: pos.z + cyl.length / 2, // Visual Y
-        z: pos.y + radius,         // Visual Z
+        y: pos.z + cyl.length / 2,
+        z: pos.y + radius,
       },
       radius, length: cyl.length,
       orientation: 'vertical',
@@ -366,7 +389,7 @@ export class OptimizedCoilSolver {
 
   private createRotatedPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
      const radius = cyl.diameter / 2;
-     const uniqueId = `cyl_r_${cyl.index}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+     const uniqueId = `cyl_r_${cyl.index}_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
      return {
         item: cyl.item,
         uniqueId: uniqueId,
@@ -436,6 +459,7 @@ export class OptimizedCoilSolver {
       return true;
   }
 
+  private packVerticalPriority(all: Cylinder[]) { return { placed: [], unplaced: [] }; }
   private packDifficultFirst(all: Cylinder[]) { return { placed: [], unplaced: [] }; }
   private packMixedOrientations(all: Cylinder[]) { return { placed: [], unplaced: [] }; }
   private packHexagonal(all: Cylinder[]) { return { placed: [], unplaced: [] }; }
