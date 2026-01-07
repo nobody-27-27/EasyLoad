@@ -2074,12 +2074,13 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * Optimal vertical-horizontal strategy based on EXACT working pattern:
-   * Area 1: 24 × D=78 vertical (3 across × 8 deep) - RECTANGULAR grid
-   * Area 2: 12 × D=85 + 2 × D=97 vertical (2 across × 7 deep) - HEXAGONAL nesting
-   * On top: D=77, D=90, and remaining D=78 horizontal
+   * Optimal vertical-horizontal strategy:
+   * Area 1: 21 × D=78 vertical (3 across × 7 deep = 546cm)
+   * Area 2: 12 × D=85 + 2 × D=97 vertical (2 across × 7 deep = ~607cm)
+   * On top: 10 × D=77 + 8 × D=90 + 5 × D=78 horizontal = 23 rolls
+   * Total: 21 + 14 + 23 = 58 rolls
    *
-   * Key insight: Area 1 rectangular (624cm) + Area 2 hexagonal (538cm) = 1162cm < 1203cm
+   * Key insight: 546cm + 607cm = 1153cm < 1203cm (container length)
    */
   private packOptimalVerticalHorizontal(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     allCylinders.forEach(c => c.placed = false);
@@ -2098,26 +2099,25 @@ export class OptimizedCoilSolver {
 
     console.log(`  D77: ${d77.length}, D78: ${d78.length}, D85: ${d85.length}, D90: ${d90.length}, D97: ${d97.length}`);
 
-    // Hexagonal spacing factor: sqrt(3)/2 ≈ 0.866
-    const HEX_FACTOR = 0.866;
+    // ============ AREA 1: D=78 vertical (21 rolls: 3×7 RECTANGULAR grid) ============
+    // Using 21 instead of 24 to leave more Y-space for Area 2 (need ~607cm for 14 rolls)
+    // 21 rolls in 7 rows = 546cm, leaving 657cm for Area 2 (enough for 607cm)
+    const d78Vertical = d78.slice(0, 21); // First 21 for vertical
+    const d78Horizontal = d78.slice(21);  // Rest (5) for horizontal
 
-    // ============ AREA 1: D=78 vertical (24 rolls: 3×8 RECTANGULAR grid) ============
-    const d78Vertical = d78.slice(0, 24); // First 24 for vertical
-    const d78Horizontal = d78.slice(24);  // Rest (2) for horizontal
-
-    console.log(`  Area 1: Placing ${d78Vertical.length} D=78 vertical (3×8 rectangular grid)`);
+    console.log(`  Area 1: Placing ${d78Vertical.length} D=78 vertical (3×7 RECTANGULAR grid)`);
 
     const d78_diameter = 78;
     let area1MaxY = 0;
 
-    // RECTANGULAR: 3 columns × 8 rows, no offset, full diameter spacing
-    for (let row = 0; row < 8 && d78Vertical.some(c => !c.placed); row++) {
+    // RECTANGULAR: 3 columns × 7 rows
+    for (let row = 0; row < 7 && d78Vertical.some(c => !c.placed); row++) {
       for (let col = 0; col < 3; col++) {
         const cyl = d78Vertical.find(c => !c.placed);
         if (!cyl) break;
 
         const x = col * d78_diameter;
-        const y = row * d78_diameter; // RECTANGULAR: full diameter spacing
+        const y = row * d78_diameter;
         const pos = { x, y, z: 0 };
 
         if (x + d78_diameter <= this.W && y + d78_diameter <= this.L) {
@@ -2138,35 +2138,38 @@ export class OptimizedCoilSolver {
 
     console.log(`    Placed ${d78Vertical.filter(c => c.placed).length} D=78 vertical, Area1 ends at Y=${area1MaxY.toFixed(1)}`);
 
-    // ============ AREA 2: D=85 + D=97 vertical (2×7 HEXAGONAL grid) ============
+    // ============ AREA 2: D=85 + D=97 vertical (RECTANGULAR - most reliable) ============
+    // Use rectangular packing to avoid hexagonal spacing issues with mixed diameters
     const area2Rolls = [...d85, ...d97];
-    const area2Y = area1MaxY; // Start after Area 1 (should be 624)
+    const area2Y = area1MaxY; // Start after Area 1 (624)
 
-    console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (2×7 hexagonal) starting at Y=${area2Y.toFixed(1)}`);
+    console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (rectangular) starting at Y=${area2Y.toFixed(1)}`);
 
-    // Sort by diameter descending to place D=97 first (wider, need more space)
-    area2Rolls.sort((a, b) => b.diameter - a.diameter);
+    // Sort by diameter ASCENDING - place D=85 first so D=97 goes at the end (less Y needed)
+    area2Rolls.sort((a, b) => a.diameter - b.diameter);
 
-    // HEXAGONAL: row spacing = diameter × 0.866
-    const d85_diameter = 85;
-    const d85_rowSpacing = d85_diameter * HEX_FACTOR; // ~73.6cm
-
+    const area2ColSpacing = 97; // Max diameter for column spacing
     let area2MaxY = area2Y;
     let area2Placed = 0;
 
+    // Track Y position adaptively based on actual row content
+    let currentY = area2Y;
+
     for (let row = 0; row < 7 && area2Rolls.some(c => !c.placed); row++) {
-      // HEXAGONAL: alternate rows offset by half diameter in X
-      const xOffset = (row % 2 === 1) ? d85_diameter / 2 : 0;
+      // Get the max diameter in this row to calculate next row's Y
+      let maxDInRow = 0;
 
       for (let col = 0; col < 2; col++) {
         const cyl = area2Rolls.find(c => !c.placed);
         if (!cyl) break;
 
         const d = cyl.diameter;
-        const x = xOffset + col * d85_diameter;
-        const y = area2Y + row * d85_rowSpacing; // HEXAGONAL: reduced spacing
+        maxDInRow = Math.max(maxDInRow, d);
+        const x = col * area2ColSpacing;
+        const y = currentY;
         const pos = { x, y, z: 0 };
 
+        // Check bounds
         if (x + d <= this.W && y + d <= this.L) {
           if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
             const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
@@ -2182,13 +2185,18 @@ export class OptimizedCoilSolver {
           }
         }
       }
+
+      // Move to next row (use max diameter of current row for spacing)
+      if (maxDInRow > 0) {
+        currentY += maxDInRow;
+      }
     }
 
     console.log(`    Placed ${area2Placed} D=85/D=97 vertical, Area2 ends at Y=${area2MaxY.toFixed(1)}`);
     console.log(`  Total vertical on floor: ${placed.length}`);
 
     // ============ HORIZONTAL ON TOP ============
-    // D=77 (all 10), D=90 (all 8), remaining D=78 (2) go horizontal
+    // D=77 (all 10), D=90 (all 8), remaining D=78 (5) go horizontal = 23 total
     const horizontalRolls = [...d77, ...d90, ...d78Horizontal];
     console.log(`  Placing ${horizontalRolls.length} horizontal on top`);
 
