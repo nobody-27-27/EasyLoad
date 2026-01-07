@@ -476,7 +476,9 @@ export class OptimizedCoilSolver {
       itemsPlaced: placed.length,
       itemsFailed: failed,
     };
-  }
+  } 
+
+  
 
   private emptyResult(): CoilSolverResult {
     return { placedCylinders: [], unplacedItems: [], statistics: { totalVolumePlaced: 0, containerVolumeUsed: 0, volumeEfficiency: 0, layerCount: 0, itemsPlaced: 0, itemsFailed: 0 } };
