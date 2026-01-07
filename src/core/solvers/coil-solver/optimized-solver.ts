@@ -2075,9 +2075,11 @@ export class OptimizedCoilSolver {
 
   /**
    * Optimal vertical-horizontal strategy based on EXACT working pattern:
-   * Area 1: 24 × D=78 vertical (3 across × 8 deep)
-   * Area 2: 12 × D=85 + 2 × D=97 vertical (2 across × 7 deep)
+   * Area 1: 24 × D=78 vertical (3 across × 8 deep) - RECTANGULAR grid
+   * Area 2: 12 × D=85 + 2 × D=97 vertical (2 across × 7 deep) - HEXAGONAL nesting
    * On top: D=77, D=90, and remaining D=78 horizontal
+   *
+   * Key insight: Area 1 rectangular (624cm) + Area 2 hexagonal (538cm) = 1162cm < 1203cm
    */
   private packOptimalVerticalHorizontal(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     allCylinders.forEach(c => c.placed = false);
@@ -2096,92 +2098,93 @@ export class OptimizedCoilSolver {
 
     console.log(`  D77: ${d77.length}, D78: ${d78.length}, D85: ${d85.length}, D90: ${d90.length}, D97: ${d97.length}`);
 
-    // ============ AREA 1: D=78 vertical (24 rolls: 3×8 grid) ============
+    // Hexagonal spacing factor: sqrt(3)/2 ≈ 0.866
+    const HEX_FACTOR = 0.866;
+
+    // ============ AREA 1: D=78 vertical (24 rolls: 3×8 RECTANGULAR grid) ============
     const d78Vertical = d78.slice(0, 24); // First 24 for vertical
     const d78Horizontal = d78.slice(24);  // Rest (2) for horizontal
 
-    console.log(`  Area 1: Placing ${d78Vertical.length} D=78 vertical (3×8 grid)`);
+    console.log(`  Area 1: Placing ${d78Vertical.length} D=78 vertical (3×8 rectangular grid)`);
 
-    let area1Y = 0;
+    const d78_diameter = 78;
+    let area1MaxY = 0;
+
+    // RECTANGULAR: 3 columns × 8 rows, no offset, full diameter spacing
     for (let row = 0; row < 8 && d78Vertical.some(c => !c.placed); row++) {
       for (let col = 0; col < 3; col++) {
         const cyl = d78Vertical.find(c => !c.placed);
         if (!cyl) break;
 
-        const x = col * 78;
-        const y = area1Y + row * 78;
+        const x = col * d78_diameter;
+        const y = row * d78_diameter; // RECTANGULAR: full diameter spacing
         const pos = { x, y, z: 0 };
 
-        if (y + 78 <= this.L && this.canPlaceVertical(pos, 78, cyl.length, placedBoxes)) {
-          const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-          placed.push(placedCyl);
-          cyl.placed = true;
-          placedBoxes.push({
-            xMin: x, xMax: x + 78,
-            yMin: y, yMax: y + 78,
-            zMin: 0, zMax: cyl.length,
-          });
+        if (x + d78_diameter <= this.W && y + d78_diameter <= this.L) {
+          if (this.canPlaceVertical(pos, d78_diameter, cyl.length, placedBoxes)) {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+              xMin: x, xMax: x + d78_diameter,
+              yMin: y, yMax: y + d78_diameter,
+              zMin: 0, zMax: cyl.length,
+            });
+            area1MaxY = Math.max(area1MaxY, y + d78_diameter);
+          }
         }
       }
     }
-    const area1EndY = area1Y + 8 * 78; // 624cm
-    console.log(`    Placed ${d78Vertical.filter(c => c.placed).length} D=78 vertical, Area1 ends at Y=${area1EndY}`);
 
-    // ============ AREA 2: D=85 + D=97 vertical (2×7 grid) ============
-    // Combine D=85 and D=97 for Area 2
+    console.log(`    Placed ${d78Vertical.filter(c => c.placed).length} D=78 vertical, Area1 ends at Y=${area1MaxY.toFixed(1)}`);
+
+    // ============ AREA 2: D=85 + D=97 vertical (2×7 HEXAGONAL grid) ============
     const area2Rolls = [...d85, ...d97];
-    const area2Y = area1EndY;
+    const area2Y = area1MaxY; // Start after Area 1 (should be 624)
 
-    console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (2×7 grid) starting at Y=${area2Y}`);
+    console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (2×7 hexagonal) starting at Y=${area2Y.toFixed(1)}`);
 
-    // Place in 2 columns, filling rows
-    let area2Row = 0;
-    let area2Col = 0;
-    let currentRowY = area2Y;
-    let currentRowMaxD = 0;
-
-    // Sort by diameter descending to place D=97 first (they're wider)
+    // Sort by diameter descending to place D=97 first (wider, need more space)
     area2Rolls.sort((a, b) => b.diameter - a.diameter);
 
-    for (const cyl of area2Rolls) {
-      if (cyl.placed) continue;
+    // HEXAGONAL: row spacing = diameter × 0.866
+    const d85_diameter = 85;
+    const d85_rowSpacing = d85_diameter * HEX_FACTOR; // ~73.6cm
 
-      const d = cyl.diameter;
+    let area2MaxY = area2Y;
+    let area2Placed = 0;
 
-      // Check if we need to move to next row
-      if (area2Col >= 2) {
-        currentRowY += currentRowMaxD;
-        area2Col = 0;
-        currentRowMaxD = 0;
-        area2Row++;
-      }
+    for (let row = 0; row < 7 && area2Rolls.some(c => !c.placed); row++) {
+      // HEXAGONAL: alternate rows offset by half diameter in X
+      const xOffset = (row % 2 === 1) ? d85_diameter / 2 : 0;
 
-      if (area2Row >= 7) break; // Only 7 rows
+      for (let col = 0; col < 2; col++) {
+        const cyl = area2Rolls.find(c => !c.placed);
+        if (!cyl) break;
 
-      const y = currentRowY;
+        const d = cyl.diameter;
+        const x = xOffset + col * d85_diameter;
+        const y = area2Y + row * d85_rowSpacing; // HEXAGONAL: reduced spacing
+        const pos = { x, y, z: 0 };
 
-      // Use fixed column positions based on max diameter (97)
-      const colX = area2Col === 0 ? 0 : 97; // First col at 0, second at 97
-
-      const pos = { x: colX, y, z: 0 };
-
-      if (y + d <= this.L && colX + d <= this.W) {
-        if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
-          const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-          placed.push(placedCyl);
-          cyl.placed = true;
-          placedBoxes.push({
-            xMin: colX, xMax: colX + d,
-            yMin: y, yMax: y + d,
-            zMin: 0, zMax: cyl.length,
-          });
-          currentRowMaxD = Math.max(currentRowMaxD, d);
-          area2Col++;
+        if (x + d <= this.W && y + d <= this.L) {
+          if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+              xMin: x, xMax: x + d,
+              yMin: y, yMax: y + d,
+              zMin: 0, zMax: cyl.length,
+            });
+            area2MaxY = Math.max(area2MaxY, y + d);
+            area2Placed++;
+          }
         }
       }
     }
 
-    console.log(`    Placed ${area2Rolls.filter(c => c.placed).length} D=85/D=97 vertical`);
+    console.log(`    Placed ${area2Placed} D=85/D=97 vertical, Area2 ends at Y=${area2MaxY.toFixed(1)}`);
     console.log(`  Total vertical on floor: ${placed.length}`);
 
     // ============ HORIZONTAL ON TOP ============
