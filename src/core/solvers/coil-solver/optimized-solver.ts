@@ -252,7 +252,30 @@ export class OptimizedCoilSolver {
       bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
     }
 
-    const { placed, unplaced } = bestResult!;
+    // FINAL FIX: Correctly calculate unplaced by comparing placed array with original all array
+    // The c.placed flags may be inconsistent due to multi-strategy approach
+    const finalPlacedCounts = new Map<string, number>();
+    for (const p of bestResult!.placed) {
+      const key = `${p.item.name}_${p.radius * 2}_${p.length}`;
+      finalPlacedCounts.set(key, (finalPlacedCounts.get(key) || 0) + 1);
+    }
+
+    const finalUsedCounts = new Map<string, number>();
+    const correctUnplaced: CargoItem[] = [];
+    for (const cyl of all) {
+      const key = `${cyl.item.name}_${cyl.diameter}_${cyl.length}`;
+      const placedCount = finalPlacedCounts.get(key) || 0;
+      const usedCount = finalUsedCounts.get(key) || 0;
+
+      if (usedCount < placedCount) {
+        finalUsedCounts.set(key, usedCount + 1);
+      } else {
+        correctUnplaced.push(cyl.item);
+      }
+    }
+
+    const placed = bestResult!.placed;
+    const unplaced = correctUnplaced;
 
     console.log(`Placed: ${placed.length}/${all.length}`);
     if (unplaced.length > 0) {
