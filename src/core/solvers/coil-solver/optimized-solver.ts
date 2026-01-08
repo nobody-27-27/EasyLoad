@@ -125,35 +125,38 @@ export class OptimizedCoilSolver {
       if (result.unplaced.length === 0) break;
     }
 
-    // Final attempt: exhaustive search for any unplaced in best result
-    if (bestResult!.unplaced.length > 0) {
-      // Count how many of each cargo were placed
-      const placedCounts = new Map<string, number>();
-      for (const p of bestResult!.placed) {
-        const key = `${p.item.name}_${p.radius * 2}_${p.length}`;
-        placedCounts.set(key, (placedCounts.get(key) || 0) + 1);
+    // CRITICAL: Sync c.placed flags to match bestResult BEFORE running fallback passes
+    // This prevents duplicates from being added
+    const syncPlacedCounts = new Map<string, number>();
+    for (const p of bestResult!.placed) {
+      const key = `${p.item.name}_${p.radius * 2}_${p.length}`;
+      syncPlacedCounts.set(key, (syncPlacedCounts.get(key) || 0) + 1);
+    }
+
+    const syncUsedCounts = new Map<string, number>();
+    for (const cyl of all) {
+      const key = `${cyl.item.name}_${cyl.diameter}_${cyl.length}`;
+      const placedCount = syncPlacedCounts.get(key) || 0;
+      const usedCount = syncUsedCounts.get(key) || 0;
+
+      if (usedCount < placedCount) {
+        syncUsedCounts.set(key, usedCount + 1);
+        cyl.placed = true;
+      } else {
+        cyl.placed = false;
       }
+    }
 
-      // Find unplaced cylinders
-      const usedCounts = new Map<string, number>();
-      const unplacedCyls: Cylinder[] = [];
+    // Final attempt: exhaustive search for any unplaced
+    const unplacedCyls = all.filter(c => !c.placed);
 
-      for (const cyl of all) {
-        const key = `${cyl.item.name}_${cyl.diameter}_${cyl.length}`;
-        const placed = placedCounts.get(key) || 0;
-        const used = usedCounts.get(key) || 0;
-
-        if (used < placed) {
-          usedCounts.set(key, used + 1);
-        } else {
-          unplacedCyls.push(cyl);
-        }
-      }
-
+    if (unplacedCyls.length > 0) {
       // Sort by smallest diameter first (easier to fit in gaps)
       unplacedCyls.sort((a, b) => a.diameter - b.diameter);
 
       for (const cyl of unplacedCyls) {
+        if (cyl.placed) continue; // Skip if already placed by previous pass
+
         const pos = this.exhaustiveSearch(cyl, bestResult!.placedBoxes);
         if (pos) {
           const placedCyl = this.createPlacedCylinder(cyl, pos);
@@ -166,14 +169,11 @@ export class OptimizedCoilSolver {
           cyl.placed = true;
         }
       }
-
-      bestResult!.unplaced = unplacedCyls.filter(c => !c.placed).map(c => c.item);
     }
 
     // Final fallback: try VERTICAL placement for any remaining unplaced
-    if (bestResult!.unplaced.length > 0) {
-      // Find all unplaced cylinders by checking placed status
-      const stillUnplaced = all.filter(c => !c.placed);
+    const stillUnplaced = all.filter(c => !c.placed);
+    if (stillUnplaced.length > 0) {
 
       // Sort by smallest diameter first (easier to fit)
       stillUnplaced.sort((a, b) => a.diameter - b.diameter);
@@ -209,8 +209,8 @@ export class OptimizedCoilSolver {
     }
 
     // SUPER-FINAL: If still unplaced, try aggressive placement with step=1 on all Z levels
-    if (bestResult!.unplaced.length > 0) {
-      const superFinalUnplaced = all.filter(c => !c.placed);
+    const superFinalUnplaced = all.filter(c => !c.placed);
+    if (superFinalUnplaced.length > 0) {
       console.log(`Super-final aggressive pass for ${superFinalUnplaced.length} unplaced cylinders`);
 
       for (const cyl of superFinalUnplaced) {
@@ -274,18 +274,30 @@ export class OptimizedCoilSolver {
       }
     }
 
-    const placed = bestResult!.placed;
     const unplaced = correctUnplaced;
+    // The actual unique placed count is total - unplaced
+    const uniquePlacedCount = all.length - unplaced.length;
 
-    console.log(`Placed: ${placed.length}/${all.length}`);
+    console.log(`Placed: ${uniquePlacedCount}/${all.length}`);
     if (unplaced.length > 0) {
       console.log(`Unplaced: ${unplaced.length}`);
     }
 
+    // Remove any duplicates from placed array to match unique count
+    const seenPositions = new Set<string>();
+    const uniquePlaced: PlacedCylinder[] = [];
+    for (const p of bestResult!.placed) {
+      const posKey = `${p.position.x.toFixed(1)}_${p.position.y.toFixed(1)}_${p.position.z.toFixed(1)}_${p.radius}_${p.length}`;
+      if (!seenPositions.has(posKey)) {
+        seenPositions.add(posKey);
+        uniquePlaced.push(p);
+      }
+    }
+
     return {
-      placedCylinders: placed,
+      placedCylinders: uniquePlaced,
       unplacedItems: unplaced,
-      statistics: this.calcStats(placed, unplaced.length),
+      statistics: this.calcStats(uniquePlaced, unplaced.length),
     };
   }
 
@@ -1517,24 +1529,32 @@ export class OptimizedCoilSolver {
       return b.diameter - a.diameter;
     });
 
-    // Place verticals on floor first - pack by diameter groups
+    // Place verticals on floor first - pack by diameter groups using HONEYCOMB pattern
     const vertByDiameter = this.groupByDiameter(canBeVertical, 10);
+    const HEX_FACTOR = 0.866; // sqrt(3)/2 for hexagonal packing
 
     for (const group of vertByDiameter) {
       const d = group[0]?.diameter || 80;
+      const hexYSpacing = d * HEX_FACTOR; // Hex row spacing saves ~13% Y space
       const maxPerRow = Math.floor(this.W / d);
-      const maxPerCol = Math.floor(this.L / d);
-      console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxPerCol} grid`);
+      const maxRowsHex = Math.floor(this.L / hexYSpacing);
+      console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxRowsHex} honeycomb grid`);
 
-      // Pack in grid pattern
+      // Pack in HONEYCOMB pattern - alternate rows offset by half diameter
       for (const cyl of group) {
         if (cyl.placed) continue;
 
-        // Find next grid position
+        // Find next honeycomb position
         let found = false;
-        for (let gy = 0; gy + cyl.diameter <= this.L && !found; gy += cyl.diameter) {
-          for (let gx = 0; gx + cyl.diameter <= this.W && !found; gx += cyl.diameter) {
-            const pos = { x: gx, y: gy, z: 0 };
+        for (let row = 0; row * hexYSpacing + cyl.diameter <= this.L && !found; row++) {
+          const xOffset = (row % 2 === 1) ? cyl.diameter / 2 : 0; // Offset odd rows
+          const y = row * hexYSpacing;
+
+          for (let col = 0; !found; col++) {
+            const x = xOffset + col * cyl.diameter;
+            if (x + cyl.diameter > this.W) break;
+
+            const pos = { x, y, z: 0 };
             if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
               const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
               placed.push(placedCyl);
