@@ -125,20 +125,6 @@ export class OptimizedCoilSolver {
       if (result.unplaced.length === 0) break;
     }
 
-    // CRITICAL: Sync placed flags to match best result BEFORE running fallbacks
-    // The flags currently reflect the LAST strategy, not the BEST strategy
-    all.forEach(c => c.placed = false);
-    for (const p of bestResult!.placed) {
-      // Find matching unplaced cylinder and mark it placed
-      const cyl = all.find(c =>
-        c.item.name === p.item.name &&
-        Math.abs(c.diameter - p.radius * 2) < 0.1 &&
-        Math.abs(c.length - p.length) < 0.1 &&
-        !c.placed
-      );
-      if (cyl) cyl.placed = true;
-    }
-
     // Final attempt: exhaustive search for any unplaced in best result
     if (bestResult!.unplaced.length > 0) {
       // Count how many of each cargo were placed
