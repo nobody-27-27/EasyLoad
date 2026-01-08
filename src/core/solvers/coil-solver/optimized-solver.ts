@@ -1529,32 +1529,24 @@ export class OptimizedCoilSolver {
       return b.diameter - a.diameter;
     });
 
-    // Place verticals on floor first - pack by diameter groups using HONEYCOMB pattern
+    // Place verticals on floor first - pack by diameter groups
     const vertByDiameter = this.groupByDiameter(canBeVertical, 10);
-    const HEX_FACTOR = 0.866; // sqrt(3)/2 for hexagonal packing
 
     for (const group of vertByDiameter) {
       const d = group[0]?.diameter || 80;
-      const hexYSpacing = d * HEX_FACTOR; // Hex row spacing saves ~13% Y space
       const maxPerRow = Math.floor(this.W / d);
-      const maxRowsHex = Math.floor(this.L / hexYSpacing);
-      console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxRowsHex} honeycomb grid`);
+      const maxPerCol = Math.floor(this.L / d);
+      console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxPerCol} grid`);
 
-      // Pack in HONEYCOMB pattern - alternate rows offset by half diameter
+      // Pack in grid pattern
       for (const cyl of group) {
         if (cyl.placed) continue;
 
-        // Find next honeycomb position
+        // Find next grid position
         let found = false;
-        for (let row = 0; row * hexYSpacing + cyl.diameter <= this.L && !found; row++) {
-          const xOffset = (row % 2 === 1) ? cyl.diameter / 2 : 0; // Offset odd rows
-          const y = row * hexYSpacing;
-
-          for (let col = 0; !found; col++) {
-            const x = xOffset + col * cyl.diameter;
-            if (x + cyl.diameter > this.W) break;
-
-            const pos = { x, y, z: 0 };
+        for (let gy = 0; gy + cyl.diameter <= this.L && !found; gy += cyl.diameter) {
+          for (let gx = 0; gx + cyl.diameter <= this.W && !found; gx += cyl.diameter) {
+            const pos = { x: gx, y: gy, z: 0 };
             if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
               const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
               placed.push(placedCyl);
