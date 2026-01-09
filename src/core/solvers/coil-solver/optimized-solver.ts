@@ -2194,23 +2194,38 @@ export class OptimizedCoilSolver {
         if (!cyl) break;
 
         const d = cyl.diameter;
-        const x = xOffset + col * d85_diameter;
-        const y = area2Y + row * d85_rowSpacing;
-        const pos = { x, y, z: 0 };
 
-        if (x + d <= this.W && y + d <= this.L) {
-          if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
-            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-            placed.push(placedCyl);
-            cyl.placed = true;
-            placedBoxes.push({
-              xMin: x, xMax: x + d,
-              yMin: y, yMax: y + d,
-              zMin: 0, zMax: cyl.length,
-            });
-            area2MaxY = Math.max(area2MaxY, y + d);
-            area2Placed++;
+        // Try to place with sliding window to accommodate larger diameters (e.g. D=97)
+        let placedThis = false;
+        const startX = xOffset + col * d85_diameter;
+        const y = area2Y + row * d85_rowSpacing;
+
+        // Allow shifting right up to 35cm to avoid collisions
+        for (let shift = 0; shift <= 35; shift += 1) {
+          const x = startX + shift;
+          const pos = { x, y, z: 0 };
+
+          if (x + d <= this.W && y + d <= this.L) {
+            if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: x, xMax: x + d,
+                yMin: y, yMax: y + d,
+                zMin: 0, zMax: cyl.length,
+              });
+              area2MaxY = Math.max(area2MaxY, y + d);
+              area2Placed++;
+              placedThis = true;
+              // console.log(`    Area2: Placed D${d} at row=${row}, col=${col}, x=${x} (shift=${shift})`);
+              break;
+            }
           }
+        }
+
+        if (!placedThis) {
+          console.log(`    Area2: FAILED to place D${d} at row=${row}, col=${col}`);
         }
       }
     }
