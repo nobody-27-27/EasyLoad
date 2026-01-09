@@ -87,6 +87,7 @@ export class OptimizedCoilSolver {
       () => this.packTightLayers(all), // Fill each Y slice completely before moving
       () => this.packAwkwardFirst(all), // Prioritize awkward middle-size rolls first
       () => this.packOptimalVerticalHorizontal(all), // Optimal: max vertical on floor, horizontal on top
+      () => this.packSmartLookahead(all), // Smart: per-roll decision grid vs honeycomb
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
@@ -2307,6 +2308,236 @@ export class OptimizedCoilSolver {
     const unplacedList = allCylinders.filter(c => !c.placed).map(c => c.item);
     console.log(`  Optimal V-H (User Pattern) result: ${placed.length} placed, ${unplacedList.length} unplaced`);
     return { placed, unplaced: unplacedList };
+  }
+
+  /**
+   * Smart lookahead placement - decides grid vs honeycomb per-roll
+   * For each roll, tries multiple candidate positions and picks the one
+   * that leaves most room for subsequent rolls
+   */
+  private packSmartLookahead(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`=== SMART LOOKAHEAD PACKING ===`);
+
+    // Sort cylinders: largest diameter first (hardest to place), then by length
+    const sortedCylinders = [...allCylinders].sort((a, b) => {
+      if (b.diameter !== a.diameter) return b.diameter - a.diameter;
+      return b.length - a.length;
+    });
+
+    const HEX_FACTOR = 0.866;
+
+    for (const cyl of sortedCylinders) {
+      if (cyl.placed) continue;
+
+      const d = cyl.diameter;
+      const len = cyl.length;
+      const canBeVertical = len <= this.H;
+
+      // Generate candidate positions
+      const candidates: Array<{
+        x: number;
+        y: number;
+        z: number;
+        orientation: 'vertical' | 'horizontal-y' | 'horizontal-x';
+        score: number;
+      }> = [];
+
+      // 1. VERTICAL candidates (grid + honeycomb positions)
+      if (canBeVertical) {
+        // Grid positions
+        for (let gy = 0; gy + d <= this.L; gy += d) {
+          for (let gx = 0; gx + d <= this.W; gx += d) {
+            const pos = { x: gx, y: gy, z: 0 };
+            if (this.canPlaceVertical(pos, d, len, placedBoxes)) {
+              candidates.push({ ...pos, orientation: 'vertical', score: 0 });
+            }
+          }
+        }
+
+        // Honeycomb offset positions (offset rows by d/2)
+        const hexYSpacing = d * HEX_FACTOR;
+        for (let row = 0; row * hexYSpacing + d <= this.L; row++) {
+          const xOffset = (row % 2 === 1) ? d / 2 : 0;
+          const y = row * hexYSpacing;
+          for (let gx = 0; gx + d <= this.W; gx += d) {
+            const x = xOffset + gx;
+            if (x + d > this.W) continue;
+            const pos = { x, y, z: 0 };
+            // Check if this position is already in candidates (avoid duplicates)
+            const isDup = candidates.some(c =>
+              Math.abs(c.x - x) < 1 && Math.abs(c.y - y) < 1 && c.z === 0 && c.orientation === 'vertical'
+            );
+            if (!isDup && this.canPlaceVertical(pos, d, len, placedBoxes)) {
+              candidates.push({ ...pos, orientation: 'vertical', score: 0 });
+            }
+          }
+        }
+
+        // Fine-grained gap filling for vertical (step = d/4 for finding gaps)
+        const step = Math.max(10, d / 4);
+        for (let gy = 0; gy + d <= this.L; gy += step) {
+          for (let gx = 0; gx + d <= this.W; gx += step) {
+            const pos = { x: gx, y: gy, z: 0 };
+            const isDup = candidates.some(c =>
+              Math.abs(c.x - gx) < step/2 && Math.abs(c.y - gy) < step/2 && c.z === 0 && c.orientation === 'vertical'
+            );
+            if (!isDup && this.canPlaceVertical(pos, d, len, placedBoxes)) {
+              candidates.push({ ...pos, orientation: 'vertical', score: 0 });
+            }
+          }
+        }
+      }
+
+      // 2. HORIZONTAL-Y candidates (on floor and stacked)
+      const zLevels = [0, ...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
+      for (const z of zLevels) {
+        if (z + d > this.H) continue;
+        const step = Math.max(10, d / 2);
+        for (let y = 0; y + len <= this.L; y += step) {
+          for (let x = 0; x + d <= this.W; x += step) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, d, len, placedBoxes)) {
+              if (z === 0 || this.hasSupportRelaxed(pos, d, len, placedBoxes)) {
+                candidates.push({ ...pos, orientation: 'horizontal-y', score: 0 });
+              }
+            }
+          }
+        }
+      }
+
+      // 3. HORIZONTAL-X (rotated) candidates
+      if (len <= this.W) {
+        for (const z of zLevels) {
+          if (z + d > this.H) continue;
+          const step = Math.max(10, d / 2);
+          for (let y = 0; y + d <= this.L; y += step) {
+            for (let x = 0; x + len <= this.W; x += step) {
+              const pos = { x, y, z };
+              if (this.canPlaceRotated(pos, d, len, placedBoxes)) {
+                if (z === 0 || this.hasRotatedSupportRelaxed(pos, d, len, placedBoxes)) {
+                  candidates.push({ ...pos, orientation: 'horizontal-x', score: 0 });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (candidates.length === 0) {
+        // No valid position found
+        continue;
+      }
+
+      // Score each candidate based on remaining space utilization
+      // Higher score = position leaves more usable space for other cylinders
+      for (const cand of candidates) {
+        // Create temporary box for this placement
+        let tempBox: PlacedBox;
+        if (cand.orientation === 'vertical') {
+          tempBox = {
+            xMin: cand.x, xMax: cand.x + d,
+            yMin: cand.y, yMax: cand.y + d,
+            zMin: cand.z, zMax: cand.z + len,
+          };
+        } else if (cand.orientation === 'horizontal-y') {
+          tempBox = {
+            xMin: cand.x, xMax: cand.x + d,
+            yMin: cand.y, yMax: cand.y + len,
+            zMin: cand.z, zMax: cand.z + d,
+          };
+        } else {
+          tempBox = {
+            xMin: cand.x, xMax: cand.x + len,
+            yMin: cand.y, yMax: cand.y + d,
+            zMin: cand.z, zMax: cand.z + d,
+          };
+        }
+
+        // Score: prefer positions that
+        // 1. Use floor space efficiently (vertical at z=0 gets bonus)
+        // 2. Leave contiguous space (not fragmenting)
+        // 3. Fill gaps (smaller remaining Y/X at edges)
+
+        let score = 0;
+
+        // Bonus for vertical (more efficient)
+        if (cand.orientation === 'vertical') score += 100;
+
+        // Bonus for floor placement
+        if (cand.z === 0) score += 50;
+
+        // Bonus for being close to existing placements (reduces fragmentation)
+        let minDistToExisting = Infinity;
+        for (const box of placedBoxes) {
+          const dist = Math.min(
+            Math.abs(tempBox.xMin - box.xMax),
+            Math.abs(tempBox.xMax - box.xMin),
+            Math.abs(tempBox.yMin - box.yMax),
+            Math.abs(tempBox.yMax - box.yMin)
+          );
+          minDistToExisting = Math.min(minDistToExisting, dist);
+        }
+        if (placedBoxes.length > 0 && minDistToExisting < d) {
+          score += 30; // Adjacent to existing
+        }
+
+        // Bonus for using edge/corner positions (leaves middle open)
+        if (cand.x === 0 || cand.x + d >= this.W - 10) score += 20;
+        if (cand.y === 0) score += 10;
+
+        // Penalty for positions that waste space above (if vertical)
+        if (cand.orientation === 'vertical' && len < this.H * 0.6) {
+          // Short vertical roll - might be better horizontal
+          score -= 10;
+        }
+
+        cand.score = score;
+      }
+
+      // Sort candidates by score (descending) and pick the best
+      candidates.sort((a, b) => b.score - a.score);
+      const best = candidates[0];
+
+      // Place the cylinder at the best position
+      let placedCyl: PlacedCylinder;
+      let box: PlacedBox;
+
+      if (best.orientation === 'vertical') {
+        placedCyl = this.createVerticalPlacedCylinder(cyl, best);
+        box = {
+          xMin: best.x, xMax: best.x + d,
+          yMin: best.y, yMax: best.y + d,
+          zMin: best.z, zMax: best.z + len,
+        };
+      } else if (best.orientation === 'horizontal-y') {
+        placedCyl = this.createPlacedCylinder(cyl, best);
+        box = {
+          xMin: best.x, xMax: best.x + d,
+          yMin: best.y, yMax: best.y + len,
+          zMin: best.z, zMax: best.z + d,
+        };
+      } else {
+        placedCyl = this.createRotatedPlacedCylinder(cyl, best);
+        box = {
+          xMin: best.x, xMax: best.x + len,
+          yMin: best.y, yMax: best.y + d,
+          zMin: best.z, zMax: best.z + d,
+        };
+      }
+
+      placed.push(placedCyl);
+      placedBoxes.push(box);
+      cyl.placed = true;
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    console.log(`  Smart lookahead result: ${placed.length} placed, ${unplaced.length} unplaced`);
+    return { placed, unplaced };
   }
 
   /**
