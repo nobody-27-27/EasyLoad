@@ -431,6 +431,162 @@ export class ValleyManager {
   }
 
   /**
+   * Find positions on "plateaus" formed by existing cylinders.
+   * This is crucial for placing horizontal cylinders on top of a grid of vertical cylinders.
+   */
+  public findPlateauPositions(
+    radius: number,
+    length: number,
+    orientation: 'horizontal-y' | 'horizontal-x'
+  ): PlacementCandidate[] {
+    const candidates: PlacementCandidate[] = [];
+
+    // 1. Identify candidate Z levels (tops of placed vertical cylinders)
+    // We group them by rounding to nearest cm to handle small variances
+    const zLevels = new Set<number>();
+    for (const cyl of this.placedCylinders) {
+      if (cyl.orientation === 'vertical') {
+        const topZ = cyl.position.z + cyl.length;
+        zLevels.add(Math.round(topZ * 10) / 10);
+      }
+    }
+
+    if (zLevels.size === 0) return candidates;
+
+    const dims = this.getOrientedDimensions(radius, length, orientation);
+    // Use finer steps for better packing density on top
+    const stepX = dims.x * 0.25;
+    const stepY = dims.y * 0.25;
+    const margin = this.config.wallMargin;
+
+    // 2. Scan each Z level
+    for (const z of zLevels) {
+      // Check if this Z level is within container bounds
+      if (z + dims.z > this.container.dimensions.height) continue;
+
+      // Scan grid at this Z level
+      for (let y = margin; y + dims.y <= this.container.dimensions.length - margin; y += stepY) {
+        for (let x = margin; x + dims.x <= this.container.dimensions.width - margin; x += stepX) {
+
+           // Calculate potential position
+           // Note: For horizontal-y/x, center.z is the bottom of the cylinder (surface level)
+           const centerPos = this.getCenterFromCorner({ x, y, z }, radius, length, orientation);
+
+           // 1. Check Collision
+           if (this.hasCollision(centerPos.x, centerPos.y, centerPos.z, radius, length, orientation)) {
+             continue;
+           }
+
+           // 2. Check Support
+           // We need to ensure the cylinder is resting on something valid.
+           // Since we derived Z from existing cylinders, we know SOMETHING is at this height.
+           // But we need to ensure the specific footprint of this new cylinder is supported.
+           // For simplicity in this iteration, we check if the center is supported.
+           // A more robust check would verify support at multiple points (ends).
+
+           const supportingIds = this.getSupportingCylinders(
+             centerPos.x, centerPos.y, centerPos.z, radius, length, orientation
+           );
+
+           if (supportingIds.length === 0) {
+             continue; // Floating in air
+           }
+
+           const cornerPos = {
+             x: x,
+             y: y,
+             z: z
+           };
+
+           const score = this.calculateScore(cornerPos);
+
+           candidates.push({
+             position: cornerPos,
+             center: centerPos,
+             orientation,
+             score,
+             supportType: 'mixed-support', // Treated as mixed since it might span multiple
+             supportingIds
+           });
+        }
+      }
+    }
+
+    return candidates.sort((a, b) => a.score - b.score);
+  }
+
+  /**
+   * Check what cylinders support a candidate position
+   */
+  private getSupportingCylinders(
+    cx: number, cy: number, cz: number,
+    radius: number, length: number,
+    orientation: 'horizontal-y' | 'horizontal-x'
+  ): string[] {
+    const supports: string[] = [];
+    const margin = 1.0; // Tolerance for gap
+
+    // We look for cylinders whose TOP face is near cz
+    // And whose XY footprint overlaps with the candidate
+
+    // Bounds of the candidate in XY
+    const cXMin = cx - radius;
+    const cXMax = cx + radius;
+    const cYMin = cy - length / 2;
+    const cYMax = cy + length / 2;
+
+    // Iterate all placed cylinders (could be optimized with spatial hash)
+    // But since we need to check exact support, iteration is safer for now.
+    // Optimization: Filter by Z first.
+
+    for (const placed of this.placedCylinders) {
+      // Check Z alignment
+      let topZ = 0;
+      if (placed.orientation === 'vertical') {
+        topZ = placed.position.z + placed.length;
+      } else {
+        topZ = placed.position.z + placed.radius * 2; // Approximate top for horizontal
+      }
+
+      if (Math.abs(topZ - cz) > margin) continue;
+
+      // Check XY overlap
+      let pXMin, pXMax, pYMin, pYMax;
+
+      if (placed.orientation === 'vertical') {
+        pXMin = placed.center.x - placed.radius;
+        pXMax = placed.center.x + placed.radius;
+        pYMin = placed.center.y - placed.radius;
+        pYMax = placed.center.y + placed.radius;
+      } else {
+        // Assume horizontal-y or x
+        const dims = this.getOrientedDimensions(placed.radius, placed.length, placed.orientation);
+        pXMin = placed.position.x;
+        pXMax = placed.position.x + dims.x;
+        pYMin = placed.position.y;
+        pYMax = placed.position.y + dims.y;
+      }
+
+      const overlap = !(
+        cXMax <= pXMin ||
+        cXMin >= pXMax ||
+        cYMax <= pYMin ||
+        cYMin >= pYMax
+      );
+
+      if (overlap) {
+        supports.push(placed.uniqueId);
+      }
+    }
+
+    // Heuristic: We need "enough" support.
+    // Ideally, we'd calculate overlapping area.
+    // For now, if we have at least 1 supporting cylinder, we accept it.
+    // Ideally > 1 for long cylinders.
+    return supports;
+  }
+
+  /**
    * Find floor positions for initial placement
    */
   public findFloorPositions(
