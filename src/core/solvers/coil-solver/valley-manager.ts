@@ -353,24 +353,40 @@ export class ValleyManager {
     const candidates: PlacementCandidate[] = [];
 
     for (const baseCyl of this.placedCylinders) {
-      // Only stack on cylinders with same orientation
-      if (baseCyl.orientation !== orientation) continue;
+      // Allow stacking same orientation OR horizontal on vertical
+      // We generally avoid vertical on horizontal as it's unstable
+      const isSameOrientation = baseCyl.orientation === orientation;
+      const isHorizontalOnVertical =
+        orientation === 'horizontal-y' && baseCyl.orientation === 'vertical';
+
+      if (!isSameOrientation && !isHorizontalOnVertical) continue;
 
       // Check if cylinder is stackable
       if (!baseCyl.item.stackable) continue;
 
       // Calculate stacking position
       let stackZ: number;
-      if (orientation === 'vertical') {
+      // If base is vertical, the top surface is at z + length
+      if (baseCyl.orientation === 'vertical') {
         stackZ = baseCyl.center.z + baseCyl.length;
       } else {
-        stackZ = baseCyl.center.z + baseCyl.radius * 2;
+        // If base is horizontal, top is at z + radius (center) + radius (surface) = z + 2r
+        stackZ = baseCyl.center.z + baseCyl.radius; // Center Z
+        // For stacking on top, we need to add the radius of the base cylinder to get surface Z
+        stackZ += baseCyl.radius;
       }
+
+      // If we are placing a horizontal cylinder, its center Z will be surface Z + its own radius
+      // If vertical, its center Z (base) will be surface Z
+      // Note: For horizontal-y/x, our system treats center.z as the BOTTOM Z (lowest point), not the geometric center.
+      // See getCenterFromCorner method.
+      // Therefore, for both vertical and horizontal, the new center.z (Base/Bottom) is exactly the surface Z.
+      const centerZ = stackZ;
 
       const centerPos = {
         x: baseCyl.center.x,
         y: baseCyl.center.y,
-        z: stackZ,
+        z: centerZ,
       };
 
       // Validate position
@@ -389,13 +405,13 @@ export class ValleyManager {
         cornerPos = {
           x: centerPos.x - radius,
           y: centerPos.y - radius,
-          z: stackZ,
+          z: centerPos.z,
         };
       } else {
         cornerPos = {
           x: centerPos.x - radius,
           y: centerPos.y - length / 2,
-          z: stackZ,
+          z: centerPos.z, // centerPos.z is already the bottom (Base/min Z)
         };
       }
 

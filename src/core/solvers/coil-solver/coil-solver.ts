@@ -154,6 +154,13 @@ export class CoilSolver {
         manager: ValleyManager;
       } | null = null;
 
+      // Calculate efficiency factors
+      const containerHeight = this.container.dimensions.height;
+      const verticalEfficiency = length / containerHeight; // How much of the vertical column is used
+      // Penalty threshold: if less than 85% efficient vertically, penalize heavily unless horizontal is impossible
+      const isVerticalInefficient = verticalEfficiency < 0.85;
+      const inefficientVerticalPenalty = 1000000; // Large penalty (equivalent to skipping 10cm depth)
+
       // Try vertical placement
       if (allowedOrientations.includes('vertical')) {
         const vertCandidates = [
@@ -163,12 +170,17 @@ export class CoilSolver {
         ];
 
         for (const candidate of vertCandidates) {
-          if (!bestPlacement || candidate.score < bestPlacement.score) {
+          let score = candidate.score;
+          if (isVerticalInefficient) {
+            score += inefficientVerticalPenalty;
+          }
+
+          if (!bestPlacement || score < bestPlacement.score) {
             bestPlacement = {
               position: candidate.position,
               center: candidate.center,
               orientation: 'vertical',
-              score: candidate.score,
+              score: score,
               supportingIds: candidate.supportingIds,
               manager: verticalManager,
             };
@@ -190,6 +202,10 @@ export class CoilSolver {
           if (length > radius * 4) {
             adjustedScore -= this.config.heightWeight * 0.5; // Bonus for horizontal
           }
+
+          // Bonus if we can stack multiple layers horizontally
+          // (implicit: best-fit will find stacking positions with better z-scores naturally,
+          // but we want to encourage starting the horizontal stack on the floor)
 
           if (!bestPlacement || adjustedScore < bestPlacement.score) {
             bestPlacement = {
@@ -330,6 +346,12 @@ export class CoilSolver {
    * Sort items by volume (largest first)
    */
   private sortByVolume(items: CargoItem[]): CargoItem[] {
+    // Experiment: Sort by Diameter Ascending for better floor fit?
+    // Or stick to Volume Descending?
+    // Let's keep Volume Descending but move 77s (smalls) to fill gaps?
+    // Actually, simply sorting by Diameter Descending is usually safer for stability (Big on bottom).
+    // Volume correlates with Diameter.
+
     return [...items].sort((a, b) => {
       const volA =
         Math.PI * Math.pow(a.dimensions.width / 2, 2) * a.dimensions.height;
