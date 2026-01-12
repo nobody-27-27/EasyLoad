@@ -129,7 +129,7 @@ export class CoilSolver {
     const horizontalManager = new ValleyManager(this.container, this.config);
 
     // Sort items by volume (largest first)
-    const sortedItems = this.sortByVolume(items);
+    const sortedItems = this.sortItems(items);
 
     // Flatten quantity
     const queue: CargoItem[] = [];
@@ -154,6 +154,10 @@ export class CoilSolver {
         manager: ValleyManager;
       } | null = null;
 
+      // Calculate efficiency factors
+      // const containerHeight = this.container.dimensions.height;
+      // const verticalEfficiency = length / containerHeight; // Unused
+
       // Try vertical placement
       if (allowedOrientations.includes('vertical')) {
         const vertCandidates = [
@@ -163,12 +167,14 @@ export class CoilSolver {
         ];
 
         for (const candidate of vertCandidates) {
-          if (!bestPlacement || candidate.score < bestPlacement.score) {
+          let score = candidate.score;
+
+          if (!bestPlacement || score < bestPlacement.score) {
             bestPlacement = {
               position: candidate.position,
               center: candidate.center,
               orientation: 'vertical',
-              score: candidate.score,
+              score: score,
               supportingIds: candidate.supportingIds,
               manager: verticalManager,
             };
@@ -176,26 +182,54 @@ export class CoilSolver {
         }
       }
 
-      // Try horizontal placement
+      // Try horizontal-y placement
       if (allowedOrientations.includes('horizontal-y')) {
         const horizCandidates = [
           ...horizontalManager.findFloorPositions(radius, length, 'horizontal-y'),
           ...horizontalManager.findStackingPositions(radius, length, 'horizontal-y'),
           ...horizontalManager.findValleyPositions(radius, length, true),
+          ...horizontalManager.findPlateauPositions(radius, length, 'horizontal-y'),
         ];
 
         for (const candidate of horizCandidates) {
-          // Adjust score slightly to prefer horizontal for long cylinders
           let adjustedScore = candidate.score;
-          if (length > radius * 4) {
-            adjustedScore -= this.config.heightWeight * 0.5; // Bonus for horizontal
-          }
+          if (length > radius * 4) adjustedScore -= this.config.heightWeight * 0.5;
+          if (candidate.position.z < 1.0) adjustedScore += 10000000; // Floor penalty
 
           if (!bestPlacement || adjustedScore < bestPlacement.score) {
             bestPlacement = {
               position: candidate.position,
               center: candidate.center,
               orientation: 'horizontal-y',
+              score: adjustedScore,
+              supportingIds: candidate.supportingIds,
+              manager: horizontalManager,
+            };
+          }
+        }
+      }
+
+      // Try horizontal-x placement
+      if (allowedOrientations.includes('horizontal-x')) {
+        const horizCandidates = [
+          ...horizontalManager.findFloorPositions(radius, length, 'horizontal-x'),
+          // Stacking/Valley for horizontal-x not fully implemented yet in ValleyManager?
+          // Actually findFloorPositions handles it. findStackingPositions handles it?
+          // findValleyPositions has 'forHorizontal' flag which implies horizontal-y/x but iterates placed items.
+          // Let's rely on findFloorPositions and findPlateauPositions for now.
+          ...horizontalManager.findPlateauPositions(radius, length, 'horizontal-x'),
+        ];
+
+        for (const candidate of horizCandidates) {
+          let adjustedScore = candidate.score;
+          if (length > radius * 4) adjustedScore -= this.config.heightWeight * 0.5;
+          if (candidate.position.z < 1.0) adjustedScore += 10000000; // Floor penalty
+
+          if (!bestPlacement || adjustedScore < bestPlacement.score) {
+            bestPlacement = {
+              position: candidate.position,
+              center: candidate.center,
+              orientation: 'horizontal-x',
               score: adjustedScore,
               supportingIds: candidate.supportingIds,
               manager: horizontalManager,
@@ -250,7 +284,7 @@ export class CoilSolver {
     const unplaced: CargoItem[] = [];
 
     // Sort items by volume
-    const sortedItems = this.sortByVolume(items);
+    const sortedItems = this.sortItems(items);
 
     // Flatten quantity
     const queue: CargoItem[] = [];
@@ -327,10 +361,20 @@ export class CoilSolver {
   }
 
   /**
-   * Sort items by volume (largest first)
+   * Sort items by Height Descending, then Diameter Descending.
+   * This groups items of similar height to create flat plateaus for stacking.
    */
-  private sortByVolume(items: CargoItem[]): CargoItem[] {
+  private sortItems(items: CargoItem[]): CargoItem[] {
     return [...items].sort((a, b) => {
+      // Primary: Height (Descending)
+      const heightDiff = b.dimensions.height - a.dimensions.height;
+      if (Math.abs(heightDiff) > 0.1) return heightDiff;
+
+      // Secondary: Diameter (Descending)
+      const diamDiff = b.dimensions.width - a.dimensions.width;
+      if (Math.abs(diamDiff) > 0.1) return diamDiff;
+
+      // Tertiary: Volume (Descending)
       const volA =
         Math.PI * Math.pow(a.dimensions.width / 2, 2) * a.dimensions.height;
       const volB =

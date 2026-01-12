@@ -125,35 +125,38 @@ export class OptimizedCoilSolver {
       if (result.unplaced.length === 0) break;
     }
 
-    // Final attempt: exhaustive search for any unplaced in best result
-    if (bestResult!.unplaced.length > 0) {
-      // Count how many of each cargo were placed
-      const placedCounts = new Map<string, number>();
-      for (const p of bestResult!.placed) {
-        const key = `${p.item.name}_${p.radius * 2}_${p.length}`;
-        placedCounts.set(key, (placedCounts.get(key) || 0) + 1);
+    // CRITICAL: Sync c.placed flags to match bestResult BEFORE running fallback passes
+    // This prevents duplicates from being added
+    const syncPlacedCounts = new Map<string, number>();
+    for (const p of bestResult!.placed) {
+      const key = `${p.item.name}_${p.radius * 2}_${p.length}`;
+      syncPlacedCounts.set(key, (syncPlacedCounts.get(key) || 0) + 1);
+    }
+
+    const syncUsedCounts = new Map<string, number>();
+    for (const cyl of all) {
+      const key = `${cyl.item.name}_${cyl.diameter}_${cyl.length}`;
+      const placedCount = syncPlacedCounts.get(key) || 0;
+      const usedCount = syncUsedCounts.get(key) || 0;
+
+      if (usedCount < placedCount) {
+        syncUsedCounts.set(key, usedCount + 1);
+        cyl.placed = true;
+      } else {
+        cyl.placed = false;
       }
+    }
 
-      // Find unplaced cylinders
-      const usedCounts = new Map<string, number>();
-      const unplacedCyls: Cylinder[] = [];
+    // Final attempt: exhaustive search for any unplaced
+    const unplacedCyls = all.filter(c => !c.placed);
 
-      for (const cyl of all) {
-        const key = `${cyl.item.name}_${cyl.diameter}_${cyl.length}`;
-        const placed = placedCounts.get(key) || 0;
-        const used = usedCounts.get(key) || 0;
-
-        if (used < placed) {
-          usedCounts.set(key, used + 1);
-        } else {
-          unplacedCyls.push(cyl);
-        }
-      }
-
+    if (unplacedCyls.length > 0) {
       // Sort by smallest diameter first (easier to fit in gaps)
       unplacedCyls.sort((a, b) => a.diameter - b.diameter);
 
       for (const cyl of unplacedCyls) {
+        if (cyl.placed) continue; // Skip if already placed by previous pass
+
         const pos = this.exhaustiveSearch(cyl, bestResult!.placedBoxes);
         if (pos) {
           const placedCyl = this.createPlacedCylinder(cyl, pos);
@@ -166,14 +169,11 @@ export class OptimizedCoilSolver {
           cyl.placed = true;
         }
       }
-
-      bestResult!.unplaced = unplacedCyls.filter(c => !c.placed).map(c => c.item);
     }
 
     // Final fallback: try VERTICAL placement for any remaining unplaced
-    if (bestResult!.unplaced.length > 0) {
-      // Find all unplaced cylinders by checking placed status
-      const stillUnplaced = all.filter(c => !c.placed);
+    const stillUnplaced = all.filter(c => !c.placed);
+    if (stillUnplaced.length > 0) {
 
       // Sort by smallest diameter first (easier to fit)
       stillUnplaced.sort((a, b) => a.diameter - b.diameter);
@@ -209,8 +209,8 @@ export class OptimizedCoilSolver {
     }
 
     // SUPER-FINAL: If still unplaced, try aggressive placement with step=1 on all Z levels
-    if (bestResult!.unplaced.length > 0) {
-      const superFinalUnplaced = all.filter(c => !c.placed);
+    const superFinalUnplaced = all.filter(c => !c.placed);
+    if (superFinalUnplaced.length > 0) {
       console.log(`Super-final aggressive pass for ${superFinalUnplaced.length} unplaced cylinders`);
 
       for (const cyl of superFinalUnplaced) {
@@ -252,17 +252,52 @@ export class OptimizedCoilSolver {
       bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
     }
 
-    const { placed, unplaced } = bestResult!;
+    // FINAL FIX: Correctly calculate unplaced by comparing placed array with original all array
+    // The c.placed flags may be inconsistent due to multi-strategy approach
+    const finalPlacedCounts = new Map<string, number>();
+    for (const p of bestResult!.placed) {
+      const key = `${p.item.name}_${p.radius * 2}_${p.length}`;
+      finalPlacedCounts.set(key, (finalPlacedCounts.get(key) || 0) + 1);
+    }
 
-    console.log(`Placed: ${placed.length}/${all.length}`);
+    const finalUsedCounts = new Map<string, number>();
+    const correctUnplaced: CargoItem[] = [];
+    for (const cyl of all) {
+      const key = `${cyl.item.name}_${cyl.diameter}_${cyl.length}`;
+      const placedCount = finalPlacedCounts.get(key) || 0;
+      const usedCount = finalUsedCounts.get(key) || 0;
+
+      if (usedCount < placedCount) {
+        finalUsedCounts.set(key, usedCount + 1);
+      } else {
+        correctUnplaced.push(cyl.item);
+      }
+    }
+
+    const unplaced = correctUnplaced;
+    // The actual unique placed count is total - unplaced
+    const uniquePlacedCount = all.length - unplaced.length;
+
+    console.log(`Placed: ${uniquePlacedCount}/${all.length}`);
     if (unplaced.length > 0) {
       console.log(`Unplaced: ${unplaced.length}`);
     }
 
+    // Remove any duplicates from placed array to match unique count
+    const seenPositions = new Set<string>();
+    const uniquePlaced: PlacedCylinder[] = [];
+    for (const p of bestResult!.placed) {
+      const posKey = `${p.position.x.toFixed(1)}_${p.position.y.toFixed(1)}_${p.position.z.toFixed(1)}_${p.radius}_${p.length}`;
+      if (!seenPositions.has(posKey)) {
+        seenPositions.add(posKey);
+        uniquePlaced.push(p);
+      }
+    }
+
     return {
-      placedCylinders: placed,
+      placedCylinders: uniquePlaced,
       unplacedItems: unplaced,
-      statistics: this.calcStats(placed, unplaced.length),
+      statistics: this.calcStats(uniquePlaced, unplaced.length),
     };
   }
 
@@ -2074,13 +2109,10 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * Optimal vertical-horizontal strategy:
-   * Area 1: 21 × D=78 vertical (3 across × 7 deep = 546cm)
-   * Area 2: 12 × D=85 + 2 × D=97 vertical (2 across × 7 deep = ~607cm)
-   * On top: 10 × D=77 + 8 × D=90 + 5 × D=78 horizontal = 23 rolls
-   * Total: 21 + 14 + 23 = 58 rolls
-   *
-   * Key insight: 546cm + 607cm = 1153cm < 1203cm (container length)
+   * Optimal vertical-horizontal strategy based on user's working pattern:
+   * Area 1: 24 × D=78 vertical (3×8 rectangular grid)
+   * Area 2: 12 × D=85 + 2 × D=97 vertical (2×7 hexagonal)
+   * On top: D=77, D=90, remaining D=78 horizontal
    */
   private packOptimalVerticalHorizontal(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     allCylinders.forEach(c => c.placed = false);
@@ -2099,19 +2131,20 @@ export class OptimizedCoilSolver {
 
     console.log(`  D77: ${d77.length}, D78: ${d78.length}, D85: ${d85.length}, D90: ${d90.length}, D97: ${d97.length}`);
 
-    // ============ AREA 1: D=78 vertical (21 rolls: 3×7 RECTANGULAR grid) ============
-    // Using 21 instead of 24 to leave more Y-space for Area 2 (need ~607cm for 14 rolls)
-    // 21 rolls in 7 rows = 546cm, leaving 657cm for Area 2 (enough for 607cm)
-    const d78Vertical = d78.slice(0, 21); // First 21 for vertical
-    const d78Horizontal = d78.slice(21);  // Rest (5) for horizontal
+    // Hexagonal spacing factor
+    const HEX_FACTOR = 0.866;
 
-    console.log(`  Area 1: Placing ${d78Vertical.length} D=78 vertical (3×7 RECTANGULAR grid)`);
+    // ============ AREA 1: D=78 vertical (24 rolls: 3×8 RECTANGULAR grid) ============
+    const d78Vertical = d78.slice(0, 24); // First 24 for vertical
+    const d78Horizontal = d78.slice(24);  // Rest (2) for horizontal
+
+    console.log(`  Area 1: Placing ${d78Vertical.length} D=78 vertical (3×8 rectangular grid)`);
 
     const d78_diameter = 78;
     let area1MaxY = 0;
 
-    // RECTANGULAR: 3 columns × 7 rows
-    for (let row = 0; row < 7 && d78Vertical.some(c => !c.placed); row++) {
+    // RECTANGULAR: 3 columns × 8 rows
+    for (let row = 0; row < 8 && d78Vertical.some(c => !c.placed); row++) {
       for (let col = 0; col < 3; col++) {
         const cyl = d78Vertical.find(c => !c.placed);
         if (!cyl) break;
@@ -2138,57 +2171,62 @@ export class OptimizedCoilSolver {
 
     console.log(`    Placed ${d78Vertical.filter(c => c.placed).length} D=78 vertical, Area1 ends at Y=${area1MaxY.toFixed(1)}`);
 
-    // ============ AREA 2: D=85 + D=97 vertical (RECTANGULAR - most reliable) ============
-    // Use rectangular packing to avoid hexagonal spacing issues with mixed diameters
+    // ============ AREA 2: D=85 + D=97 vertical (2×7 HEXAGONAL grid) ============
     const area2Rolls = [...d85, ...d97];
     const area2Y = area1MaxY; // Start after Area 1 (624)
 
-    console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (rectangular) starting at Y=${area2Y.toFixed(1)}`);
+    console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (2×7 hexagonal) starting at Y=${area2Y.toFixed(1)}`);
 
-    // Sort by diameter ASCENDING - place D=85 first so D=97 goes at the end (less Y needed)
-    area2Rolls.sort((a, b) => a.diameter - b.diameter);
+    // Sort by diameter descending to place D=97 first
+    area2Rolls.sort((a, b) => b.diameter - a.diameter);
 
-    const area2ColSpacing = 97; // Max diameter for column spacing
+    const d85_diameter = 85;
+    const d85_rowSpacing = d85_diameter * HEX_FACTOR; // ~73.6cm
+
     let area2MaxY = area2Y;
     let area2Placed = 0;
 
-    // Track Y position adaptively based on actual row content
-    let currentY = area2Y;
-
     for (let row = 0; row < 7 && area2Rolls.some(c => !c.placed); row++) {
-      // Get the max diameter in this row to calculate next row's Y
-      let maxDInRow = 0;
+      const xOffset = (row % 2 === 1) ? d85_diameter / 2 : 0;
 
       for (let col = 0; col < 2; col++) {
         const cyl = area2Rolls.find(c => !c.placed);
         if (!cyl) break;
 
         const d = cyl.diameter;
-        maxDInRow = Math.max(maxDInRow, d);
-        const x = col * area2ColSpacing;
-        const y = currentY;
-        const pos = { x, y, z: 0 };
 
-        // Check bounds
-        if (x + d <= this.W && y + d <= this.L) {
-          if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
-            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-            placed.push(placedCyl);
-            cyl.placed = true;
-            placedBoxes.push({
-              xMin: x, xMax: x + d,
-              yMin: y, yMax: y + d,
-              zMin: 0, zMax: cyl.length,
-            });
-            area2MaxY = Math.max(area2MaxY, y + d);
-            area2Placed++;
+        // Try to place with sliding window to accommodate larger diameters (e.g. D=97)
+        let placedThis = false;
+        const startX = xOffset + col * d85_diameter;
+        const y = area2Y + row * d85_rowSpacing;
+
+        // Allow shifting right up to 35cm to avoid collisions
+        for (let shift = 0; shift <= 35; shift += 1) {
+          const x = startX + shift;
+          const pos = { x, y, z: 0 };
+
+          if (x + d <= this.W && y + d <= this.L) {
+            if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: x, xMax: x + d,
+                yMin: y, yMax: y + d,
+                zMin: 0, zMax: cyl.length,
+              });
+              area2MaxY = Math.max(area2MaxY, y + d);
+              area2Placed++;
+              placedThis = true;
+              // console.log(`    Area2: Placed D${d} at row=${row}, col=${col}, x=${x} (shift=${shift})`);
+              break;
+            }
           }
         }
-      }
 
-      // Move to next row (use max diameter of current row for spacing)
-      if (maxDInRow > 0) {
-        currentY += maxDInRow;
+        if (!placedThis) {
+          console.log(`    Area2: FAILED to place D${d} at row=${row}, col=${col}`);
+        }
       }
     }
 
@@ -2196,7 +2234,7 @@ export class OptimizedCoilSolver {
     console.log(`  Total vertical on floor: ${placed.length}`);
 
     // ============ HORIZONTAL ON TOP ============
-    // D=77 (all 10), D=90 (all 8), remaining D=78 (5) go horizontal = 23 total
+    // D=77 (all 10), D=90 (all 8), remaining D=78 (2) go horizontal = 20 total
     const horizontalRolls = [...d77, ...d90, ...d78Horizontal];
     console.log(`  Placing ${horizontalRolls.length} horizontal on top`);
 
