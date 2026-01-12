@@ -2381,6 +2381,28 @@ export class OptimizedCoilSolver {
           }
         }
 
+        // If STILL failed, try fallback to simple rectangular grid at this Y (ignore hex offset)
+        if (!placedThis) {
+             const simpleX = col * d; // Simple 2-column grid
+             const simplePos = { x: simpleX, y, z: 0 };
+             if (simpleX + d <= this.W && y + d <= this.L) {
+                 if (this.canPlaceVertical(simplePos, d, cyl.length, placedBoxes)) {
+                      const placedCyl = this.createVerticalPlacedCylinder(cyl, simplePos);
+                      placed.push(placedCyl);
+                      cyl.placed = true;
+                      placedBoxes.push({
+                        xMin: simpleX, xMax: simpleX + d,
+                        yMin: y, yMax: y + d,
+                        zMin: 0, zMax: cyl.length,
+                      });
+                      area2MaxY = Math.max(area2MaxY, y + d);
+                      area2Placed++;
+                      placedThis = true;
+                      console.log(`    Area2: Fallback to Rectangular D${d} at row=${row}, col=${col}`);
+                 }
+             }
+        }
+
         if (!placedThis) {
           console.log(`    Area2: FAILED to place D${d} at row=${row}, col=${col}`);
         }
@@ -4190,9 +4212,13 @@ export class OptimizedCoilSolver {
       // Z overlaps - check XY collision
       const boxW = box.xMax - box.xMin;
       const boxL = box.yMax - box.yMin;
+      const boxH = box.zMax - box.zMin;
 
-      // Determine if box is a horizontal cylinder (long in Y) or vertical (square-ish)
-      if (Math.abs(boxW - boxL) < 10) {
+      // Detect box type using geometric properties (allowing 5cm tolerance)
+      const isVerticalBox = Math.abs(boxW - boxL) < 5;
+      const isRotatedHorizontalBox = !isVerticalBox && Math.abs(boxL - boxH) < 5;
+
+      if (isVerticalBox) {
         // Square-ish box - another vertical cylinder, use circular collision
         const otherR = boxW / 2;
         const otherCx = box.xMin + otherR;
@@ -4206,8 +4232,17 @@ export class OptimizedCoilSolver {
         if (distSq < minDist * minDist) {
           return false;
         }
+      } else if (isRotatedHorizontalBox) {
+        // Horizontal-X: Rectangular in XY projection (Length x Diameter)
+        // New Vertical cylinder vs Horizontal-X box
+        // Check overlap
+        if (x >= box.xMax || x + diameter <= box.xMin) continue; // No X overlap
+        if (y >= box.yMax || y + diameter <= box.yMin) continue; // No Y overlap
+
+        // Bounding box overlap is sufficient rejection
+        return false;
       } else {
-        // Horizontal cylinder (long in Y direction)
+        // Horizontal-Y cylinder (long in Y direction)
         // The horizontal cylinder is circular in XZ plane, rectangular in XY projection
         // For simplicity, check if vertical cylinder circle overlaps with box rectangle
 
