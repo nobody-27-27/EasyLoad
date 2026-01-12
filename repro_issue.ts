@@ -34,7 +34,7 @@ const items: CargoItem[] = [
   { id: '7', name: 'Roll 90x160.02', type: 'cylinder', quantity: 8, dimensions: { width: 90, height: 160.02, length: 90, weight: 100 }, color: 'purple' },
 ];
 
-console.log('Running OptimizedCoilSolver...');
+console.log('Running OptimizedCoilSolver with Human Logic...');
 const solver = new OptimizedCoilSolver(container);
 const result = solver.solve(items);
 
@@ -50,26 +50,11 @@ result.placedCylinders.forEach(p => {
   const zMin = p.position.z;
   const zMax = p.orientation === 'vertical' ? zMin + p.length : zMin + p.radius * 2;
 
-  if (xMin < -0.1 || xMax > container.dimensions.width + 0.1 ||
-      yMin < -0.1 || yMax > container.dimensions.length + 0.1 ||
-      zMin < -0.1 || zMax > container.dimensions.height + 0.1) {
+  const EPS = 0.05;
+  if (xMin < -EPS || xMax > container.dimensions.width + EPS ||
+      yMin < -EPS || yMax > container.dimensions.length + EPS ||
+      zMin < -EPS || zMax > container.dimensions.height + EPS) {
     console.error(`OOB DETECTED: ${p.item.name} at (${xMin}, ${yMin}, ${zMin}) [${p.orientation}]`);
     console.error(`  Bounds: X[${xMin}-${xMax}], Y[${yMin}-${yMax}], Z[${zMin}-${zMax}]`);
   }
 });
-
-// Analyze Gap
-// Find Max Y of D78 (Area 1)
-const d78s = result.placedCylinders.filter(c => Math.abs(c.radius * 2 - 78) < 1 && c.orientation === 'vertical');
-const d78MaxY = Math.max(...d78s.map(c => c.position.y + c.radius * 2));
-console.log(`Area 1 (D78) Ends at Y=${d78MaxY}`);
-
-// Find Min Y of D85/D97 (Area 2)
-const area2 = result.placedCylinders.filter(c => (Math.abs(c.radius * 2 - 85) < 1 || Math.abs(c.radius * 2 - 97) < 1) && c.orientation === 'vertical');
-if (area2.length > 0) {
-    const area2MinY = Math.min(...area2.map(c => c.position.y));
-    console.log(`Area 2 (D85/D97) Starts at Y=${area2MinY}`);
-    console.log(`Gap Size: ${area2MinY - d78MaxY}`);
-} else {
-    console.log('No Area 2 items placed vertically.');
-}
