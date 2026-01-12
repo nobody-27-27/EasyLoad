@@ -25,6 +25,7 @@ interface PlacedBox {
   yMax: number;
   zMin: number;
   zMax: number;
+  orientation: 'vertical' | 'horizontal-x' | 'horizontal-y';
 }
 
 /**
@@ -100,19 +101,31 @@ export class OptimizedCoilSolver {
       // IMPORTANT: Handle orientation correctly!
       const placedBoxes: PlacedBox[] = result.placed.map(p => {
         const isVertical = p.orientation === 'vertical';
+        const isRotated = p.orientation === 'horizontal-x';
+
         if (isVertical) {
           // Vertical: diameter in X and Y, length in Z
           return {
             xMin: p.position.x, xMax: p.position.x + p.radius * 2,
             yMin: p.position.y, yMax: p.position.y + p.radius * 2,
             zMin: p.position.z, zMax: p.position.z + p.length,
+            orientation: 'vertical',
+          };
+        } else if (isRotated) {
+          // Horizontal-X: length in X, diameter in Y and Z
+          return {
+            xMin: p.position.x, xMax: p.position.x + p.length,
+            yMin: p.position.y, yMax: p.position.y + p.radius * 2,
+            zMin: p.position.z, zMax: p.position.z + p.radius * 2,
+            orientation: 'horizontal-x',
           };
         } else {
-          // Horizontal: diameter in X and Z, length in Y
+          // Horizontal-Y: diameter in X and Z, length in Y
           return {
             xMin: p.position.x, xMax: p.position.x + p.radius * 2,
             yMin: p.position.y, yMax: p.position.y + p.length,
             zMin: p.position.z, zMax: p.position.z + p.radius * 2,
+            orientation: 'horizontal-y',
           };
         }
       });
@@ -162,6 +175,7 @@ export class OptimizedCoilSolver {
           const placedCyl = this.createPlacedCylinder(cyl, pos);
           bestResult!.placed.push(placedCyl);
           bestResult!.placedBoxes.push({
+            orientation: 'horizontal-y',
             xMin: pos.x, xMax: pos.x + cyl.diameter,
             yMin: pos.y, yMax: pos.y + cyl.length,
             zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -195,6 +209,7 @@ export class OptimizedCoilSolver {
           bestResult!.placed.push(placedCyl);
           // For vertical, the box dimensions change
           bestResult!.placedBoxes.push({
+            orientation: 'vertical',
             xMin: vertPos.x, xMax: vertPos.x + cyl.diameter,
             yMin: vertPos.y, yMax: vertPos.y + cyl.diameter,
             zMin: vertPos.z, zMax: vertPos.z + cyl.length,
@@ -238,6 +253,7 @@ export class OptimizedCoilSolver {
             const placedCyl = this.createPlacedCylinder(cyl, result.pos);
             bestResult!.placed.push(placedCyl);
             bestResult!.placedBoxes.push({
+            orientation: 'horizontal-y',
               xMin: result.pos.x, xMax: result.pos.x + cyl.diameter,
               yMin: result.pos.y, yMax: result.pos.y + cyl.length,
               zMin: result.pos.z, zMax: result.pos.z + cyl.diameter,
@@ -246,6 +262,7 @@ export class OptimizedCoilSolver {
             const placedCyl = this.createVerticalPlacedCylinder(cyl, result.pos);
             bestResult!.placed.push(placedCyl);
             bestResult!.placedBoxes.push({
+            orientation: 'vertical',
               xMin: result.pos.x, xMax: result.pos.x + cyl.diameter,
               yMin: result.pos.y, yMax: result.pos.y + cyl.diameter,
               zMin: result.pos.z, zMax: result.pos.z + cyl.length,
@@ -254,6 +271,7 @@ export class OptimizedCoilSolver {
             const placedCyl = this.createRotatedPlacedCylinder(cyl, result.pos);
             bestResult!.placed.push(placedCyl);
             bestResult!.placedBoxes.push({
+            orientation: 'horizontal-x',
               xMin: result.pos.x, xMax: result.pos.x + cyl.length,
               yMin: result.pos.y, yMax: result.pos.y + cyl.diameter,
               zMin: result.pos.z, zMax: result.pos.z + cyl.diameter,
@@ -358,6 +376,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             const box = {
+            orientation: 'horizontal-y',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: currentY, yMax: currentY + cyl.length,
               zMin: 0, zMax: cyl.diameter,
@@ -408,6 +427,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: currentY, yMax: currentY + cyl.length,
                 zMin: supportedZ, zMax: supportedZ + cyl.diameter,
@@ -431,6 +451,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: currentY, yMax: currentY + cyl.length,
                 zMin: supportedZ, zMax: supportedZ + cyl.diameter,
@@ -462,6 +483,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: currentY, yMax: currentY + cyl.length,
                 zMin: z, zMax: z + cyl.diameter,
@@ -483,6 +505,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -532,6 +555,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: horizPos.x, xMax: horizPos.x + cyl.diameter,
           yMin: horizPos.y, yMax: horizPos.y + cyl.length,
           zMin: horizPos.z, zMax: horizPos.z + cyl.diameter,
@@ -543,6 +567,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: horizPos.x, xMax: horizPos.x + cyl.diameter,
           yMin: horizPos.y, yMax: horizPos.y + cyl.length,
           zMin: horizPos.z, zMax: horizPos.z + cyl.diameter,
@@ -554,6 +579,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'vertical',
           xMin: vertPos.x, xMax: vertPos.x + cyl.diameter,
           yMin: vertPos.y, yMax: vertPos.y + cyl.diameter,
           zMin: vertPos.z, zMax: vertPos.z + cyl.length,
@@ -576,6 +602,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: horizPos.x, xMax: horizPos.x + cyl.diameter,
           yMin: horizPos.y, yMax: horizPos.y + cyl.length,
           zMin: horizPos.z, zMax: horizPos.z + cyl.diameter,
@@ -592,6 +619,7 @@ export class OptimizedCoilSolver {
           placed.push(placedCyl);
           cyl.placed = true;
           placedBoxes.push({
+            orientation: 'vertical',
             xMin: vertPos.x, xMax: vertPos.x + cyl.diameter,
             yMin: vertPos.y, yMax: vertPos.y + cyl.diameter,
             zMin: vertPos.z, zMax: vertPos.z + cyl.length,
@@ -631,6 +659,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.length,
                   zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -663,6 +692,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.length,
                   zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -687,6 +717,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'vertical',
                     xMin: pos.x, xMax: pos.x + cyl.diameter,
                     yMin: pos.y, yMax: pos.y + cyl.diameter,
                     zMin: pos.z, zMax: pos.z + cyl.length,
@@ -729,6 +760,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.length,
                 zMin: 0, zMax: cyl.diameter,
@@ -750,6 +782,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'vertical',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.diameter,
                   zMin: 0, zMax: cyl.length,
@@ -773,6 +806,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-x',
                   xMin: pos.x, xMax: pos.x + cyl.length,
                   yMin: pos.y, yMax: pos.y + cyl.diameter,
                   zMin: 0, zMax: cyl.diameter,
@@ -799,6 +833,7 @@ export class OptimizedCoilSolver {
                     placed.push(placedCyl);
                     cyl.placed = true;
                     placedBoxes.push({
+            orientation: 'horizontal-y',
                       xMin: pos.x, xMax: pos.x + cyl.diameter,
                       yMin: pos.y, yMax: pos.y + cyl.length,
                       zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -827,6 +862,7 @@ export class OptimizedCoilSolver {
                     placed.push(placedCyl);
                     cyl.placed = true;
                     placedBoxes.push({
+            orientation: 'vertical',
                       xMin: pos.x, xMax: pos.x + cyl.diameter,
                       yMin: pos.y, yMax: pos.y + cyl.diameter,
                       zMin: pos.z, zMax: pos.z + cyl.length,
@@ -867,6 +903,7 @@ export class OptimizedCoilSolver {
             const placedCyl = this.createPlacedCylinder(cyl, foundPos.pos);
             placed.push(placedCyl);
             placedBoxes.push({
+            orientation: 'horizontal-y',
               xMin: foundPos.pos.x, xMax: foundPos.pos.x + cyl.diameter,
               yMin: foundPos.pos.y, yMax: foundPos.pos.y + cyl.length,
               zMin: foundPos.pos.z, zMax: foundPos.pos.z + cyl.diameter,
@@ -875,6 +912,7 @@ export class OptimizedCoilSolver {
             const placedCyl = this.createVerticalPlacedCylinder(cyl, foundPos.pos);
             placed.push(placedCyl);
             placedBoxes.push({
+            orientation: 'vertical',
               xMin: foundPos.pos.x, xMax: foundPos.pos.x + cyl.diameter,
               yMin: foundPos.pos.y, yMax: foundPos.pos.y + cyl.diameter,
               zMin: foundPos.pos.z, zMax: foundPos.pos.z + cyl.length,
@@ -883,6 +921,7 @@ export class OptimizedCoilSolver {
             const placedCyl = this.createRotatedPlacedCylinder(cyl, foundPos.pos);
             placed.push(placedCyl);
             placedBoxes.push({
+            orientation: 'horizontal-x',
               xMin: foundPos.pos.x, xMax: foundPos.pos.x + cyl.length,
               yMin: foundPos.pos.y, yMax: foundPos.pos.y + cyl.diameter,
               zMin: foundPos.pos.z, zMax: foundPos.pos.z + cyl.diameter,
@@ -948,6 +987,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCylinder);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'vertical',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.diameter,
                 zMin: 0, zMax: cyl.length,
@@ -969,6 +1009,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCylinder);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.length,
                 zMin: 0, zMax: cyl.diameter,
@@ -1007,6 +1048,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCylinder);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'horizontal-y',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: currentY, yMax: currentY + cyl.length,
               zMin: 0, zMax: cyl.diameter,
@@ -1038,6 +1080,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCylinder);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: currentY, yMax: currentY + cyl.length,
                 zMin: supportedZ, zMax: supportedZ + cyl.diameter,
@@ -1068,6 +1111,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCylinder);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.length,
                   zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1091,6 +1135,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCylinder);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'vertical',
                     xMin: pos.x, xMax: pos.x + cyl.diameter,
                     yMin: pos.y, yMax: pos.y + cyl.diameter,
                     zMin: pos.z, zMax: pos.z + cyl.length,
@@ -1130,6 +1175,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCylinder);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.length,
                 zMin: 0, zMax: cyl.diameter,
@@ -1150,6 +1196,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCylinder);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'vertical',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.diameter,
                   zMin: 0, zMax: cyl.length,
@@ -1171,6 +1218,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCylinder);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-x',
                   xMin: pos.x, xMax: pos.x + cyl.length,
                   yMin: pos.y, yMax: pos.y + cyl.diameter,
                   zMin: 0, zMax: cyl.diameter,
@@ -1197,6 +1245,7 @@ export class OptimizedCoilSolver {
                     placed.push(placedCylinder);
                     cyl.placed = true;
                     placedBoxes.push({
+            orientation: 'horizontal-y',
                       xMin: pos.x, xMax: pos.x + cyl.diameter,
                       yMin: pos.y, yMax: pos.y + cyl.length,
                       zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1225,6 +1274,7 @@ export class OptimizedCoilSolver {
                     placed.push(placedCylinder);
                     cyl.placed = true;
                     placedBoxes.push({
+            orientation: 'vertical',
                       xMin: pos.x, xMax: pos.x + cyl.diameter,
                       yMin: pos.y, yMax: pos.y + cyl.diameter,
                       zMin: pos.z, zMax: pos.z + cyl.length,
@@ -1355,6 +1405,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1411,6 +1462,7 @@ export class OptimizedCoilSolver {
           placed.push(placedCyl);
           cyl.placed = true;
           placedBoxes.push({
+            orientation: 'horizontal-y',
             xMin: pos.x, xMax: pos.x + cyl.diameter,
             yMin: currentY, yMax: currentY + cyl.length,
             zMin: 0, zMax: cyl.diameter,
@@ -1443,6 +1495,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'horizontal-y',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: currentY, yMax: currentY + cyl.length,
               zMin: supportedZ, zMax: supportedZ + cyl.diameter,
@@ -1467,6 +1520,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'vertical',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.diameter,
                 zMin: 0, zMax: cyl.length,
@@ -1490,6 +1544,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1506,6 +1561,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'vertical',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.diameter,
           zMin: pos.z, zMax: pos.z + cyl.length,
@@ -1585,6 +1641,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'vertical',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.diameter,
                   zMin: 0, zMax: cyl.length,
@@ -1609,6 +1666,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'vertical',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.diameter,
                   zMin: 0, zMax: cyl.length,
@@ -1630,6 +1688,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1655,6 +1714,7 @@ export class OptimizedCoilSolver {
           placed.push(placedCyl);
           cyl.placed = true;
           placedBoxes.push({
+            orientation: 'vertical',
             xMin: pos.x, xMax: pos.x + cyl.diameter,
             yMin: pos.y, yMax: pos.y + cyl.diameter,
             zMin: pos.z, zMax: pos.z + cyl.length,
@@ -1701,6 +1761,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-y',
                     xMin: pos.x, xMax: pos.x + cyl.diameter,
                     yMin: pos.y, yMax: pos.y + cyl.length,
                     zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1720,6 +1781,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-x',
                     xMin: pos.x, xMax: pos.x + cyl.length,
                     yMin: pos.y, yMax: pos.y + cyl.diameter,
                     zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1764,6 +1826,7 @@ export class OptimizedCoilSolver {
                     placed.push(placedCyl);
                     cyl.placed = true;
                     placedBoxes.push({
+            orientation: 'horizontal-x',
                       xMin: p.x, xMax: p.x + cyl.length,
                       yMin: p.y, yMax: p.y + cyl.diameter,
                       zMin: p.z, zMax: p.z + cyl.diameter,
@@ -1785,6 +1848,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1850,6 +1914,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'vertical',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.diameter,
                 zMin: pos.z, zMax: pos.z + cyl.length,
@@ -1873,6 +1938,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'vertical',
                   xMin: x, xMax: x + cyl.diameter,
                   yMin: y, yMax: y + cyl.diameter,
                   zMin: 0, zMax: cyl.length,
@@ -1889,6 +1955,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: x, xMax: x + cyl.diameter,
                   yMin: y, yMax: y + cyl.length,
                   zMin: 0, zMax: cyl.diameter,
@@ -1921,6 +1988,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'vertical',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: pos.y, yMax: pos.y + cyl.diameter,
               zMin: pos.z, zMax: pos.z + cyl.length,
@@ -1939,6 +2007,7 @@ export class OptimizedCoilSolver {
           placed.push(placedCyl);
           cyl.placed = true;
           placedBoxes.push({
+            orientation: 'horizontal-y',
             xMin: pos.x, xMax: pos.x + cyl.diameter,
             yMin: pos.y, yMax: pos.y + cyl.length,
             zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -1955,6 +2024,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2019,6 +2089,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-y',
                     xMin: x, xMax: x + cyl.diameter,
                     yMin: currentY, yMax: currentY + cyl.length,
                     zMin: z, zMax: z + cyl.diameter,
@@ -2042,6 +2113,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-x',
                     xMin: x, xMax: x + cyl.length,
                     yMin: currentY, yMax: currentY + cyl.diameter,
                     zMin: z, zMax: z + cyl.diameter,
@@ -2065,6 +2137,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'vertical',
                     xMin: x, xMax: x + cyl.diameter,
                     yMin: currentY, yMax: currentY + cyl.diameter,
                     zMin: z, zMax: z + cyl.length,
@@ -2094,6 +2167,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2156,6 +2230,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'vertical',
                 xMin: x, xMax: x + cyl.diameter,
                 yMin: y, yMax: y + cyl.diameter,
                 zMin: 0, zMax: cyl.length,
@@ -2178,6 +2253,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-y',
                     xMin: x, xMax: x + cyl.diameter,
                     yMin: y, yMax: y + cyl.length,
                     zMin: z, zMax: z + cyl.diameter,
@@ -2202,6 +2278,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-x',
                     xMin: x, xMax: x + cyl.length,
                     yMin: y, yMax: y + cyl.diameter,
                     zMin: z, zMax: z + cyl.diameter,
@@ -2234,6 +2311,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'vertical',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: pos.y, yMax: pos.y + cyl.diameter,
               zMin: pos.z, zMax: pos.z + cyl.length,
@@ -2252,6 +2330,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2315,6 +2394,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'vertical',
               xMin: x, xMax: x + d78_diameter,
               yMin: y, yMax: y + d78_diameter,
               zMin: 0, zMax: cyl.length,
@@ -2368,6 +2448,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'vertical',
                 xMin: x, xMax: x + d,
                 yMin: y, yMax: y + d,
                 zMin: 0, zMax: cyl.length,
@@ -2391,6 +2472,7 @@ export class OptimizedCoilSolver {
                       placed.push(placedCyl);
                       cyl.placed = true;
                       placedBoxes.push({
+            orientation: 'vertical',
                         xMin: simpleX, xMax: simpleX + d,
                         yMin: y, yMax: y + d,
                         zMin: 0, zMax: cyl.length,
@@ -2444,6 +2526,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: x, xMax: x + d,
                   yMin: y, yMax: y + len,
                   zMin: z, zMax: z + d,
@@ -2470,6 +2553,7 @@ export class OptimizedCoilSolver {
                   placed.push(placedCyl);
                   cyl.placed = true;
                   placedBoxes.push({
+            orientation: 'horizontal-x',
                     xMin: x, xMax: x + len,
                     yMin: y, yMax: y + d,
                     zMin: z, zMax: z + d,
@@ -2490,6 +2574,7 @@ export class OptimizedCoilSolver {
           placed.push(placedCyl);
           cyl.placed = true;
           placedBoxes.push({
+            orientation: 'horizontal-y',
             xMin: pos.x, xMax: pos.x + d,
             yMin: pos.y, yMax: pos.y + len,
             zMin: pos.z, zMax: pos.z + d,
@@ -2658,6 +2743,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'horizontal-y',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: pos.y, yMax: pos.y + cyl.length,
               zMin: 0, zMax: cyl.diameter,
@@ -2682,6 +2768,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.length,
                 zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2711,6 +2798,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.length,
                   zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2734,6 +2822,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2789,6 +2878,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: bestPos.x, xMax: bestPos.x + cyl.diameter,
           yMin: bestPos.y, yMax: bestPos.y + cyl.length,
           zMin: 0, zMax: cyl.diameter,
@@ -2816,6 +2906,7 @@ export class OptimizedCoilSolver {
                 placed.push(placedCyl);
                 cyl.placed = true;
                 placedBoxes.push({
+            orientation: 'horizontal-y',
                   xMin: pos.x, xMax: pos.x + cyl.diameter,
                   yMin: pos.y, yMax: pos.y + cyl.length,
                   zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2838,6 +2929,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2892,6 +2984,7 @@ export class OptimizedCoilSolver {
             placed.push(placedCyl);
             cyl.placed = true;
             placedBoxes.push({
+            orientation: 'horizontal-y',
               xMin: pos.x, xMax: pos.x + cyl.diameter,
               yMin: pos.y, yMax: pos.y + cyl.length,
               zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2922,6 +3015,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.length,
                 zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2951,6 +3045,7 @@ export class OptimizedCoilSolver {
               placed.push(placedCyl);
               cyl.placed = true;
               placedBoxes.push({
+            orientation: 'horizontal-y',
                 xMin: pos.x, xMax: pos.x + cyl.diameter,
                 yMin: pos.y, yMax: pos.y + cyl.length,
                 zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2979,6 +3074,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -2995,6 +3091,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -3274,6 +3371,7 @@ export class OptimizedCoilSolver {
           placed.push(placedCyl);
           cyl.placed = true;
           placedBoxes.push({
+            orientation: 'horizontal-y',
             xMin: pos.x, xMax: pos.x + cyl.diameter,
             yMin: pos.y, yMax: pos.y + cyl.length,
             zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -3291,6 +3389,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -3369,6 +3468,7 @@ export class OptimizedCoilSolver {
         placed.push(placedCyl);
         cyl.placed = true;
         placedBoxes.push({
+            orientation: 'horizontal-y',
           xMin: pos.x, xMax: pos.x + cyl.diameter,
           yMin: pos.y, yMax: pos.y + cyl.length,
           zMin: pos.z, zMax: pos.z + cyl.diameter,
@@ -3484,6 +3584,7 @@ export class OptimizedCoilSolver {
           cyl.placed = true;
 
           const box = {
+            orientation: 'horizontal-y',
             xMin: x, xMax: x + cyl.diameter,
             yMin: yPos, yMax: yPos + cyl.length,
             zMin: 0, zMax: cyl.diameter,
@@ -3523,6 +3624,7 @@ export class OptimizedCoilSolver {
             cyl.placed = true;
 
             const box = {
+            orientation: 'horizontal-y',
               xMin: x, xMax: x + cyl.diameter,
               yMin: yPos, yMax: yPos + cyl.length,
               zMin: z, zMax: z + cyl.diameter,
@@ -3561,6 +3663,7 @@ export class OptimizedCoilSolver {
             cyl.placed = true;
 
             const box = {
+            orientation: 'horizontal-y',
               xMin: x, xMax: x + cyl.diameter,
               yMin: yPos, yMax: yPos + cyl.length,
               zMin: z, zMax: z + cyl.diameter,
@@ -3675,14 +3778,10 @@ export class OptimizedCoilSolver {
     // Check collision with each placed item
     for (const box of placed) {
       const boxW = box.xMax - box.xMin;
-      const boxL = box.yMax - box.yMin;
-      const boxH = box.zMax - box.zMin;
 
-      // Detect box type
-      // Vertical: Height (Z) is significantly larger than Width (X) and Length (Y)
-      const isVerticalBox = boxH > boxW * 1.5 && boxH > boxL * 1.5;
-      // Rotated Horizontal (Horizontal-X): Width (X) is length, Height (Z) is diameter
-      const isRotatedHorizontalBox = boxW > boxL * 1.5 && boxW > boxH * 1.5;
+      // Detect box type from orientation field
+      const isVerticalBox = box.orientation === 'vertical';
+      const isRotatedHorizontalBox = box.orientation === 'horizontal-x';
 
       if (isVerticalBox) {
         // Collision: new HORIZONTAL vs existing VERTICAL
@@ -4211,12 +4310,10 @@ export class OptimizedCoilSolver {
 
       // Z overlaps - check XY collision
       const boxW = box.xMax - box.xMin;
-      const boxL = box.yMax - box.yMin;
-      const boxH = box.zMax - box.zMin;
 
-      // Detect box type using geometric properties (allowing 5cm tolerance)
-      const isVerticalBox = Math.abs(boxW - boxL) < 5;
-      const isRotatedHorizontalBox = !isVerticalBox && Math.abs(boxL - boxH) < 5;
+      // Detect box type using orientation
+      const isVerticalBox = box.orientation === 'vertical';
+      const isRotatedHorizontalBox = box.orientation === 'horizontal-x';
 
       if (isVerticalBox) {
         // Square-ish box - another vertical cylinder, use circular collision
@@ -4430,13 +4527,11 @@ export class OptimizedCoilSolver {
       // Check X overlap first (our length is along X)
       if (x >= box.xMax || x + length <= box.xMin) continue;
 
-      const boxW = box.xMax - box.xMin;
       const boxL = box.yMax - box.yMin;
-      const boxH = box.zMax - box.zMin;
 
       // Detect box type
-      const isVerticalBox = boxH > boxW * 1.5 && boxH > boxL * 1.5;
-      const isRotatedHorizontal = boxW > boxL * 1.5; // Length along X
+      const isVerticalBox = box.orientation === 'vertical';
+      const isRotatedHorizontal = box.orientation === 'horizontal-x';
 
       if (isVerticalBox) {
         // Vertical cylinder collision
