@@ -2430,93 +2430,52 @@ export class OptimizedCoilSolver {
     let area2MaxY = area2Y;
     let area2Placed = 0;
 
-    // SPOT-DRIVEN Strategy: Iterate spots, fill with best fitting cylinder
-    // This prevents a single unplaceable cylinder from blocking the entire pipeline
-    for (let row = 0; row < 9 && area2Rolls.some(c => !c.placed); row++) {
-      const xOffset = (row % 2 === 1) ? d85_diameter / 2 : 0;
+    // ROW-FILLING Strategy: Fill width of each row dynamically
+    // This allows mixing D85 and D97 without fixed column slots that cause overlap
+    for (let row = 0; row < 10 && area2Rolls.some(c => !c.placed); row++) {
+      let currentX = (row % 2 === 1) ? d85_diameter / 2 : 0;
+      const y = area2Y + row * d85_rowSpacing;
 
-      for (let col = 0; col < 2; col++) {
-        // Find ANY unplaced cylinder that fits in this spot
-        // Prioritize larger ones (already sorted)
-        const startX = xOffset + col * d85_diameter;
-        const y = area2Y + row * d85_rowSpacing;
-
-        // Try to place the best fitting cylinder
-        // We scan through unplaced rolls and take the first one that fits
+      // Ensure we have enough width remaining for at least the smallest item
+      while (currentX + 85 <= this.W) { // 85 is min diameter in this group
+        // Find best fitting cylinder for this spot
+        // Prioritize largest (D97) to ensure they get placed
         let placedThisSpot = false;
 
-        // Try standard hexagonal position with small shifts
         for (const cyl of area2Rolls) {
           if (cyl.placed) continue;
-          if (placedThisSpot) break;
 
           const d = cyl.diameter;
+          if (currentX + d > this.W) continue; // Won't fit in remaining width
+          if (y + d > this.L) continue; // Won't fit in length
 
-          // PRIORITIZE SMALL SHIFTS: Try 0 first, then small steps
-          for (let shift = 0; shift <= 35; shift += 1) {
-            const x = startX + shift;
-            const pos = { x, y, z: 0 };
+          const pos = { x: currentX, y, z: 0 };
 
-            if (x + d <= this.W && y + d <= this.L) {
-              if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
-                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-                placed.push(placedCyl);
-                cyl.placed = true;
-                placedBoxes.push({
-                  orientation: 'vertical',
-                  xMin: x, xMax: x + d,
-                  yMin: y, yMax: y + d,
-                  zMin: 0, zMax: cyl.length,
-                });
-                area2MaxY = Math.max(area2MaxY, y + d);
-                area2Placed++;
-                placedThisSpot = true;
-                break;
-              }
-            }
+          // Check collision
+          if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+              orientation: 'vertical',
+              xMin: pos.x, xMax: pos.x + d,
+              yMin: pos.y, yMax: pos.y + d,
+              zMin: 0, zMax: cyl.length,
+            });
+            area2MaxY = Math.max(area2MaxY, y + d);
+            area2Placed++;
+            placedThisSpot = true;
+
+            // Advance X by diameter + small gap
+            currentX += d + 1;
+            break;
           }
         }
 
-        // Fallback: Rectangular grid (ignore hex offset)
         if (!placedThisSpot) {
-             for (const cyl of area2Rolls) {
-                if (cyl.placed) continue;
-                if (placedThisSpot) break;
-
-                const d = cyl.diameter;
-                const simpleX = col * d; // Simple 2-column grid based on OWN diameter
-                // Or maybe stick to the D85 grid? Let's use col * 85 to keep alignment with others
-                const gridX = col * 85;
-
-                // Try range of X positions around the grid point
-                for (let x = gridX; x <= gridX + 40; x += 5) {
-                    const simplePos = { x, y, z: 0 };
-                    if (x + d <= this.W && y + d <= this.L) {
-                        if (this.canPlaceVertical(simplePos, d, cyl.length, placedBoxes)) {
-                             const placedCyl = this.createVerticalPlacedCylinder(cyl, simplePos);
-                             placed.push(placedCyl);
-                             cyl.placed = true;
-                             placedBoxes.push({
-                                orientation: 'vertical',
-                                xMin: x, xMax: x + d,
-                                yMin: y, yMax: y + d,
-                                zMin: 0, zMax: cyl.length,
-                             });
-                             area2MaxY = Math.max(area2MaxY, y + d);
-                             area2Placed++;
-                             placedThisSpot = true;
-                             console.log(`    Area2: Fallback to Rectangular D${d} at row=${row}, col=${col}, x=${x}`);
-                             break;
-                        }
-                    }
-                }
-             }
-        }
-
-        if (!placedThisSpot) {
-          // If we couldn't fill this spot, we leave it empty and move to next.
-          // This prevents blocking.
-          // console.log(`    Area2: Could not fill spot at row=${row}, col=${col}`);
+          // If we couldn't place any remaining cylinder at currentX,
+          // try advancing slightly (maybe a small obstruction) or break if full
+          currentX += 5;
         }
       }
     }
@@ -2543,14 +2502,16 @@ export class OptimizedCoilSolver {
       const zLevels = [...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
 
       // Try placing horizontal-Y at each Z level
+      // Reduce step size to find tight spots
       for (const z of zLevels) {
         if (found) break;
         if (z + d > this.H) continue;
 
-        for (let y = 0; y + len <= this.L && !found; y += 10) {
-          for (let x = 0; x + d <= this.W && !found; x += 10) {
+        for (let y = 0; y + len <= this.L && !found; y += 2) {
+          for (let x = 0; x + d <= this.W && !found; x += 2) {
             const pos = { x, y, z };
             if (this.canPlace(pos, d, len, placedBoxes)) {
+              // Check support - relax it further for top layers
               if (this.hasSupportRelaxed(pos, d, len, placedBoxes)) {
                 const placedCyl = this.createPlacedCylinder(cyl, pos);
                 placed.push(placedCyl);
@@ -2574,8 +2535,8 @@ export class OptimizedCoilSolver {
           if (found) break;
           if (z + d > this.H) continue;
 
-          for (let y = 0; y + d <= this.L && !found; y += 10) {
-            for (let x = 0; x + len <= this.W && !found; x += 10) {
+          for (let y = 0; y + d <= this.L && !found; y += 2) {
+            for (let x = 0; x + len <= this.W && !found; x += 2) {
               const pos = { x, y, z };
               if (this.canPlaceRotated(pos, d, len, placedBoxes)) {
                 if (this.hasRotatedSupportRelaxed(pos, d, len, placedBoxes)) {
@@ -3795,11 +3756,12 @@ export class OptimizedCoilSolver {
   ): boolean {
     const { x, y, z } = pos;
     const radius = diameter / 2;
+    const EPS = 0.1; // Safety margin for bounds
 
     // Check container bounds
-    if (x < 0 || x + diameter > this.W) return false;
-    if (y < 0 || y + length > this.L) return false;
-    if (z < 0 || z + diameter > this.H) return false;
+    if (x < -EPS || x + diameter > this.W + EPS) return false;
+    if (y < -EPS || y + length > this.L + EPS) return false;
+    if (z < -EPS || z + diameter > this.H + EPS) return false;
 
     // Center of new HORIZONTAL cylinder in XZ plane
     const cx = x + radius;
@@ -4322,11 +4284,12 @@ export class OptimizedCoilSolver {
   ): boolean {
     const { x, y, z } = pos;
     const radius = diameter / 2;
+    const EPS = 0.1;
 
     // Check bounds (for vertical: diameter is X/Y footprint, length is height Z)
-    if (x < 0 || x + diameter > this.W) return false;
-    if (y < 0 || y + diameter > this.L) return false;
-    if (z < 0 || z + length > this.H) return false;
+    if (x < -EPS || x + diameter > this.W + EPS) return false;
+    if (y < -EPS || y + diameter > this.L + EPS) return false;
+    if (z < -EPS || z + length > this.H + EPS) return false;
 
     // Center of vertical cylinder in XY plane
     const cx = x + radius;
@@ -4542,11 +4505,12 @@ export class OptimizedCoilSolver {
   ): boolean {
     const { x, y, z } = pos;
     const radius = diameter / 2;
+    const EPS = 0.1;
 
     // Check container bounds (rotated: length along X, diameter along Y and Z)
-    if (x < 0 || x + length > this.W) return false;
-    if (y < 0 || y + diameter > this.L) return false;
-    if (z < 0 || z + diameter > this.H) return false;
+    if (x < -EPS || x + length > this.W + EPS) return false;
+    if (y < -EPS || y + diameter > this.L + EPS) return false;
+    if (z < -EPS || z + diameter > this.H + EPS) return false;
 
     // Center of rotated cylinder in YZ plane
     const cy = y + radius;
