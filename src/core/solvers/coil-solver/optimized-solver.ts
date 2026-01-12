@@ -216,6 +216,22 @@ export class OptimizedCoilSolver {
       for (const cyl of superFinalUnplaced) {
         const result = this.tryAggressivePlacement(cyl, bestResult!.placedBoxes);
         if (result) {
+          // Double check bounds to prevent "sticking out" issue
+          let fits = true;
+          if (result.orientation === 'horizontal-x') {
+             if (result.pos.x + cyl.length > this.W || result.pos.y + cyl.diameter > this.L) fits = false;
+          } else if (result.orientation === 'vertical') {
+             if (result.pos.x + cyl.diameter > this.W || result.pos.y + cyl.diameter > this.L) fits = false;
+          } else {
+             if (result.pos.x + cyl.diameter > this.W || result.pos.y + cyl.length > this.L) fits = false;
+          }
+
+          if (!fits) {
+             console.error(`  AGGRESSIVE PLACEMENT BOUNDARY VIOLATION PREVENTED for ${cyl.item.name}`);
+             console.log(`  ${cyl.item.name} D${cyl.diameter}: AGGRESSIVE FAILED`);
+             continue;
+          }
+
           console.log(`  ${cyl.item.name} D${cyl.diameter}: AGGRESSIVE ${result.orientation.toUpperCase()} at (${result.pos.x}, ${result.pos.y}, ${result.pos.z})`);
 
           if (result.orientation === 'horizontal-y') {
@@ -2340,6 +2356,7 @@ export class OptimizedCoilSolver {
         const startX = xOffset + col * d85_diameter;
         const y = area2Y + row * d85_rowSpacing;
 
+        // PRIORITIZE SMALL SHIFTS: Try 0 first, then small steps
         // Allow shifting right up to 35cm to avoid collisions
         for (let shift = 0; shift <= 35; shift += 1) {
           const x = startX + shift;
@@ -3636,10 +3653,14 @@ export class OptimizedCoilSolver {
     // Check collision with each placed item
     for (const box of placed) {
       const boxW = box.xMax - box.xMin;
+      const boxL = box.yMax - box.yMin;
       const boxH = box.zMax - box.zMin;
 
-      // Detect if this box is a VERTICAL cylinder (height > width significantly)
-      const isVerticalBox = boxH > boxW * 1.5;
+      // Detect box type
+      // Vertical: Height (Z) is significantly larger than Width (X) and Length (Y)
+      const isVerticalBox = boxH > boxW * 1.5 && boxH > boxL * 1.5;
+      // Rotated Horizontal (Horizontal-X): Width (X) is length, Height (Z) is diameter
+      const isRotatedHorizontalBox = boxW > boxL * 1.5 && boxW > boxH * 1.5;
 
       if (isVerticalBox) {
         // Collision: new HORIZONTAL vs existing VERTICAL
@@ -3656,6 +3677,19 @@ export class OptimizedCoilSolver {
         }
 
         // Horizontal cylinder passing through vertical - actual collision
+        return false;
+      } else if (isRotatedHorizontalBox) {
+        // Collision: new HORIZONTAL-Y vs existing HORIZONTAL-X
+        // Cross orientation check
+        if (x >= box.xMax || x + diameter <= box.xMin) continue;
+        if (y >= box.yMax || y + length <= box.yMin) continue;
+        if (z >= box.zMax || z + diameter <= box.zMin) continue;
+
+        // Overlap in all 3 dims - check circular cross-section overlap
+        // Rotated box is circular in YZ plane
+        // New box is circular in XZ plane
+        // This is a cylinder-cylinder intersection test, simplified to bounding box for safety
+        // since we generally don't want cross-orientation overlap unless stacked
         return false;
       } else {
         // Collision: new HORIZONTAL vs existing HORIZONTAL
@@ -4393,9 +4427,16 @@ export class OptimizedCoilSolver {
         if (distSq < minDist * minDist) return false;
       } else {
         // Normal horizontal (length along Y) - circular in XZ
-        if (y >= box.yMax || y + diameter <= box.yMin) continue;
-        if (z >= box.zMax || z + diameter <= box.zMin) continue;
-        // Conservative bounding box for cross-orientation
+        // Existing box: Horizontal-Y
+        // New candidate: Horizontal-X (Rotated)
+
+        // Check collision:
+        if (x >= box.xMax || x + length <= box.xMin) continue; // No X overlap
+        if (y >= box.yMax || y + diameter <= box.yMin) continue; // No Y overlap
+        if (z >= box.zMax || z + diameter <= box.zMin) continue; // No Z overlap
+
+        // Overlap detected in all dimensions
+        // For cross-orientation, bounding box collision is usually sufficient to reject
         return false;
       }
     }
