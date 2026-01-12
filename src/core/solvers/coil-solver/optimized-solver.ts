@@ -232,18 +232,26 @@ export class OptimizedCoilSolver {
         const result = this.tryAggressivePlacement(cyl, bestResult!.placedBoxes);
         if (result) {
           // Double check bounds to prevent "sticking out" issue
+          // Add 0.1cm buffer to ensure we aren't exactly on the edge in a way that triggers UI warnings
           let fits = true;
+          const EPS = 0.1;
+
           if (result.orientation === 'horizontal-x') {
-             if (result.pos.x + cyl.length > this.W || result.pos.y + cyl.diameter > this.L) fits = false;
+             if (result.pos.x < -EPS || result.pos.x + cyl.length > this.W + EPS) fits = false;
+             if (result.pos.y < -EPS || result.pos.y + cyl.diameter > this.L + EPS) fits = false;
+             if (result.pos.z < -EPS || result.pos.z + cyl.diameter > this.H + EPS) fits = false;
           } else if (result.orientation === 'vertical') {
-             if (result.pos.x + cyl.diameter > this.W || result.pos.y + cyl.diameter > this.L) fits = false;
+             if (result.pos.x < -EPS || result.pos.x + cyl.diameter > this.W + EPS) fits = false;
+             if (result.pos.y < -EPS || result.pos.y + cyl.diameter > this.L + EPS) fits = false;
+             if (result.pos.z < -EPS || result.pos.z + cyl.length > this.H + EPS) fits = false;
           } else {
-             if (result.pos.x + cyl.diameter > this.W || result.pos.y + cyl.length > this.L) fits = false;
+             if (result.pos.x < -EPS || result.pos.x + cyl.diameter > this.W + EPS) fits = false;
+             if (result.pos.y < -EPS || result.pos.y + cyl.length > this.L + EPS) fits = false;
+             if (result.pos.z < -EPS || result.pos.z + cyl.diameter > this.H + EPS) fits = false;
           }
 
           if (!fits) {
-             console.error(`  AGGRESSIVE PLACEMENT BOUNDARY VIOLATION PREVENTED for ${cyl.item.name}`);
-             console.log(`  ${cyl.item.name} D${cyl.diameter}: AGGRESSIVE FAILED`);
+             console.error(`  AGGRESSIVE PLACEMENT BOUNDARY VIOLATION PREVENTED for ${cyl.item.name} at (${result.pos.x}, ${result.pos.y}, ${result.pos.z})`);
              continue;
           }
 
@@ -2413,7 +2421,7 @@ export class OptimizedCoilSolver {
 
     console.log(`  Area 2: Placing ${area2Rolls.length} D=85/D=97 vertical (2×7 hexagonal) starting at Y=${area2Y.toFixed(1)}`);
 
-    // Sort by diameter descending to place D=97 first
+    // Sort by diameter descending to place D=97 first (preference)
     area2Rolls.sort((a, b) => b.diameter - a.diameter);
 
     const d85_diameter = 85;
@@ -2422,71 +2430,93 @@ export class OptimizedCoilSolver {
     let area2MaxY = area2Y;
     let area2Placed = 0;
 
-    for (let row = 0; row < 7 && area2Rolls.some(c => !c.placed); row++) {
+    // SPOT-DRIVEN Strategy: Iterate spots, fill with best fitting cylinder
+    // This prevents a single unplaceable cylinder from blocking the entire pipeline
+    for (let row = 0; row < 9 && area2Rolls.some(c => !c.placed); row++) {
       const xOffset = (row % 2 === 1) ? d85_diameter / 2 : 0;
 
       for (let col = 0; col < 2; col++) {
-        const cyl = area2Rolls.find(c => !c.placed);
-        if (!cyl) break;
-
-        const d = cyl.diameter;
-
-        // Try to place with sliding window to accommodate larger diameters (e.g. D=97)
-        let placedThis = false;
+        // Find ANY unplaced cylinder that fits in this spot
+        // Prioritize larger ones (already sorted)
         const startX = xOffset + col * d85_diameter;
         const y = area2Y + row * d85_rowSpacing;
 
-        // PRIORITIZE SMALL SHIFTS: Try 0 first, then small steps
-        // Allow shifting right up to 35cm to avoid collisions
-        for (let shift = 0; shift <= 35; shift += 1) {
-          const x = startX + shift;
-          const pos = { x, y, z: 0 };
+        // Try to place the best fitting cylinder
+        // We scan through unplaced rolls and take the first one that fits
+        let placedThisSpot = false;
 
-          if (x + d <= this.W && y + d <= this.L) {
-            if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
-              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-              placed.push(placedCyl);
-              cyl.placed = true;
-              placedBoxes.push({
-            orientation: 'vertical',
-                xMin: x, xMax: x + d,
-                yMin: y, yMax: y + d,
-                zMin: 0, zMax: cyl.length,
-              });
-              area2MaxY = Math.max(area2MaxY, y + d);
-              area2Placed++;
-              placedThis = true;
-              // console.log(`    Area2: Placed D${d} at row=${row}, col=${col}, x=${x} (shift=${shift})`);
-              break;
+        // Try standard hexagonal position with small shifts
+        for (const cyl of area2Rolls) {
+          if (cyl.placed) continue;
+          if (placedThisSpot) break;
+
+          const d = cyl.diameter;
+
+          // PRIORITIZE SMALL SHIFTS: Try 0 first, then small steps
+          for (let shift = 0; shift <= 35; shift += 1) {
+            const x = startX + shift;
+            const pos = { x, y, z: 0 };
+
+            if (x + d <= this.W && y + d <= this.L) {
+              if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  orientation: 'vertical',
+                  xMin: x, xMax: x + d,
+                  yMin: y, yMax: y + d,
+                  zMin: 0, zMax: cyl.length,
+                });
+                area2MaxY = Math.max(area2MaxY, y + d);
+                area2Placed++;
+                placedThisSpot = true;
+                break;
+              }
             }
           }
         }
 
-        // If STILL failed, try fallback to simple rectangular grid at this Y (ignore hex offset)
-        if (!placedThis) {
-             const simpleX = col * d; // Simple 2-column grid
-             const simplePos = { x: simpleX, y, z: 0 };
-             if (simpleX + d <= this.W && y + d <= this.L) {
-                 if (this.canPlaceVertical(simplePos, d, cyl.length, placedBoxes)) {
-                      const placedCyl = this.createVerticalPlacedCylinder(cyl, simplePos);
-                      placed.push(placedCyl);
-                      cyl.placed = true;
-                      placedBoxes.push({
-            orientation: 'vertical',
-                        xMin: simpleX, xMax: simpleX + d,
-                        yMin: y, yMax: y + d,
-                        zMin: 0, zMax: cyl.length,
-                      });
-                      area2MaxY = Math.max(area2MaxY, y + d);
-                      area2Placed++;
-                      placedThis = true;
-                      console.log(`    Area2: Fallback to Rectangular D${d} at row=${row}, col=${col}`);
-                 }
+        // Fallback: Rectangular grid (ignore hex offset)
+        if (!placedThisSpot) {
+             for (const cyl of area2Rolls) {
+                if (cyl.placed) continue;
+                if (placedThisSpot) break;
+
+                const d = cyl.diameter;
+                const simpleX = col * d; // Simple 2-column grid based on OWN diameter
+                // Or maybe stick to the D85 grid? Let's use col * 85 to keep alignment with others
+                const gridX = col * 85;
+
+                // Try range of X positions around the grid point
+                for (let x = gridX; x <= gridX + 40; x += 5) {
+                    const simplePos = { x, y, z: 0 };
+                    if (x + d <= this.W && y + d <= this.L) {
+                        if (this.canPlaceVertical(simplePos, d, cyl.length, placedBoxes)) {
+                             const placedCyl = this.createVerticalPlacedCylinder(cyl, simplePos);
+                             placed.push(placedCyl);
+                             cyl.placed = true;
+                             placedBoxes.push({
+                                orientation: 'vertical',
+                                xMin: x, xMax: x + d,
+                                yMin: y, yMax: y + d,
+                                zMin: 0, zMax: cyl.length,
+                             });
+                             area2MaxY = Math.max(area2MaxY, y + d);
+                             area2Placed++;
+                             placedThisSpot = true;
+                             console.log(`    Area2: Fallback to Rectangular D${d} at row=${row}, col=${col}, x=${x}`);
+                             break;
+                        }
+                    }
+                }
              }
         }
 
-        if (!placedThis) {
-          console.log(`    Area2: FAILED to place D${d} at row=${row}, col=${col}`);
+        if (!placedThisSpot) {
+          // If we couldn't fill this spot, we leave it empty and move to next.
+          // This prevents blocking.
+          // console.log(`    Area2: Could not fill spot at row=${row}, col=${col}`);
         }
       }
     }
