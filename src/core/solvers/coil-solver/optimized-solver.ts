@@ -1530,33 +1530,75 @@ export class OptimizedCoilSolver {
     });
 
     // Place verticals on floor first - pack by diameter groups
-    const vertByDiameter = this.groupByDiameter(canBeVertical, 10);
+    // Use tight tolerance (2cm) to prevent large diameters forcing inefficient spacing on smaller ones
+    const vertByDiameter = this.groupByDiameter(canBeVertical, 2);
 
     for (const group of vertByDiameter) {
       const d = group[0]?.diameter || 80;
+      const radius = d / 2;
       const maxPerRow = Math.floor(this.W / d);
-      const maxPerCol = Math.floor(this.L / d);
-      console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxPerCol} grid`);
 
-      // Pack in grid pattern
-      for (const cyl of group) {
-        if (cyl.placed) continue;
+      // Check if we can stagger rows while keeping the same number of columns
+      // Width required for N staggered cols = (N-1)*d + d + radius = N*d + radius
+      // If we can stagger, we save Y space (row height = d * 0.866)
+      const canStagger = (maxPerRow * d + radius) <= this.W;
 
-        // Find next grid position
-        let found = false;
-        for (let gy = 0; gy + cyl.diameter <= this.L && !found; gy += cyl.diameter) {
-          for (let gx = 0; gx + cyl.diameter <= this.W && !found; gx += cyl.diameter) {
-            const pos = { x: gx, y: gy, z: 0 };
-            if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
-              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-              placed.push(placedCyl);
-              cyl.placed = true;
-              placedBoxes.push({
-                xMin: pos.x, xMax: pos.x + cyl.diameter,
-                yMin: pos.y, yMax: pos.y + cyl.diameter,
-                zMin: 0, zMax: cyl.length,
-              });
-              found = true;
+      console.log(`  Vertical group D=${d}: ${group.length} cylinders, maxCols=${maxPerRow}, canStagger=${canStagger}`);
+
+      if (canStagger) {
+        // Hexagonal/Staggered packing
+        const rowHeight = d * 0.866;
+
+        for (const cyl of group) {
+          if (cyl.placed) continue;
+          let found = false;
+
+          // Iterate rows by index to calculate toggle shift
+          // Scan entire container length
+          for (let r = 0; r * rowHeight + d <= this.L && !found; r++) {
+            const gy = r * rowHeight;
+            const isOffset = (r % 2 === 1);
+            // If offset, shift right by radius. Check if we have room for the shift.
+            const xStart = isOffset ? radius : 0;
+
+            // Scan columns
+            for (let gx = xStart; gx + d <= this.W && !found; gx += d) {
+              const pos = { x: gx, y: gy, z: 0 };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.length,
+                });
+                found = true;
+              }
+            }
+          }
+        }
+      } else {
+        // Rectangular packing (standard grid)
+        for (const cyl of group) {
+          if (cyl.placed) continue;
+
+          // Find next grid position
+          let found = false;
+          for (let gy = 0; gy + cyl.diameter <= this.L && !found; gy += cyl.diameter) {
+            for (let gx = 0; gx + cyl.diameter <= this.W && !found; gx += cyl.diameter) {
+              const pos = { x: gx, y: gy, z: 0 };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.length,
+                });
+                found = true;
+              }
             }
           }
         }
