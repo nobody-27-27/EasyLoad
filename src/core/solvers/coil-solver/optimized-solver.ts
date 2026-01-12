@@ -1649,24 +1649,122 @@ export class OptimizedCoilSolver {
     }
 
     // Place remaining unplaced verticals as horizontals
-    for (const cyl of canBeVertical.filter(c => !c.placed)) {
-      const pos = this.findBestPosition(cyl, placedBoxes);
-      if (pos) {
-        const placedCyl = this.createPlacedCylinder(cyl, pos);
-        placed.push(placedCyl);
-        cyl.placed = true;
-        placedBoxes.push({
-          xMin: pos.x, xMax: pos.x + cyl.diameter,
-          yMin: pos.y, yMax: pos.y + cyl.length,
-          zMin: pos.z, zMax: pos.z + cyl.diameter,
-        });
+    // Sort by length DESC to ensure large items are placed first on the "roof"
+    const unplacedVerticals = canBeVertical.filter(c => !c.placed)
+      .sort((a, b) => {
+        if (b.length !== a.length) return b.length - a.length;
+        return b.diameter - a.diameter;
+      });
+
+    for (const cyl of unplacedVerticals) {
+      // Find best position with rotation support
+      // Prioritize filling Z layers (bottom up) then Y (front to back)
+      let found = false;
+      const zLevels = [...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
+
+      // Also include 0 if not present, and some intermediate levels
+      if (!zLevels.includes(0)) zLevels.unshift(0);
+
+      // Search strategy: Z-levels (stacking) -> Y (length) -> X (width)
+      // Try both orientations at each spot
+      for (const z of zLevels) {
+        if (z + Math.min(cyl.diameter, cyl.length) > this.H) continue;
+        if (found) break;
+
+        // Try Y steps
+        for (let y = 0; y <= this.L; y += 5) {
+          if (found) break;
+          // Try X steps
+          for (let x = 0; x <= this.W; x += 5) {
+            // 1. Try Horizontal-Y
+            if (y + cyl.length <= this.L && x + cyl.diameter <= this.W && z + cyl.diameter <= this.H) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.length,
+                    zMin: pos.z, zMax: pos.z + cyl.diameter,
+                  });
+                  found = true;
+                  break;
+                }
+              }
+            }
+
+            // 2. Try Horizontal-X (Rotated)
+            if (y + cyl.diameter <= this.L && x + cyl.length <= this.W && z + cyl.diameter <= this.H) {
+              const pos = { x, y, z };
+              if (this.canPlaceRotated(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasRotatedSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createRotatedPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.length,
+                    yMin: pos.y, yMax: pos.y + cyl.diameter,
+                    zMin: pos.z, zMax: pos.z + cyl.diameter,
+                  });
+                  found = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
       }
     }
 
     // Final exhaustive search
     for (const cyl of allCylinders.filter(c => !c.placed)) {
-      const pos = this.exhaustiveSearch(cyl, placedBoxes);
-      if (pos) {
+      // Try normal exhaustive search (Horizontal-Y)
+      let pos = this.exhaustiveSearch(cyl, placedBoxes);
+
+      // If failed, try rotated exhaustive search manually
+      if (!pos && cyl.length <= this.W) {
+        // Try to find rotated position
+        // Try multiple grid sizes
+        for (const step of [10, 5, 2]) {
+          if (pos) break;
+
+          const zLevels = [...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
+          if (!zLevels.includes(0)) zLevels.unshift(0);
+
+          for (const z of zLevels) {
+            if (z + cyl.diameter > this.H) continue;
+
+            for (let y = 0; y + cyl.diameter <= this.L; y += step) {
+              for (let x = 0; x + cyl.length <= this.W; x += step) {
+                const p = { x, y, z };
+                if (this.canPlaceRotated(p, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (z === 0 || this.hasRotatedSupportRelaxed(p, cyl.diameter, cyl.length, placedBoxes)) {
+                    // Manually construct result to signal rotated placement
+                    // But exhaustiveSearch returns just point.
+                    // We need to handle placement here.
+                    const placedCyl = this.createRotatedPlacedCylinder(cyl, p);
+                    placed.push(placedCyl);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: p.x, xMax: p.x + cyl.length,
+                      yMin: p.y, yMax: p.y + cyl.diameter,
+                      zMin: p.z, zMax: p.z + cyl.diameter,
+                    });
+                    pos = p; // Found!
+                    break;
+                  }
+                }
+              }
+              if (pos) break;
+            }
+            if (pos) break;
+          }
+        }
+      }
+
+      if (pos && !cyl.placed) { // If pos found by normal exhaustiveSearch
         const placedCyl = this.createPlacedCylinder(cyl, pos);
         placed.push(placedCyl);
         cyl.placed = true;
