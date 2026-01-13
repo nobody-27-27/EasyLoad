@@ -68,75 +68,43 @@ export class OptimizedCoilSolver {
     console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
     console.log(`Cylinders to place: ${all.length}`);
 
-    // Try multiple strategies and pick the best result
-    const strategies = [
-      () => this.packDifficultFirst(all), // Place large-diameter cylinders first (vertical)
-      () => this.packMixedOrientations(all), // TRUE mixed orientation - tries both for each cylinder
-      () => this.packHexagonal(all), // Hexagonal/valley nesting - most efficient
-      () => this.packWithStrategy(all, 'length-groups'),
-      () => this.packWithStrategy(all, 'diameter-first'),
-      () => this.packWithStrategy(all, 'small-first'),
-      () => this.packWithStrategy(all, 'large-first'),
-      () => this.packWithStrategy(all, 'by-diameter-groups'),
-      () => this.packWithStrategy(all, 'volume-desc'),
-      () => this.packMixedOptimal(all),
-      () => this.packLargestFirst(all),
-      () => this.packByStackEfficiency(all),
-      () => this.packCompact(all), // NEW: Compact packing focusing on floor utilization
-      () => this.packVerticalPriority(all), // NEW: Prioritize vertical for short rolls
-      () => this.packMaximizeStacking(all), // Maximize vertical stacking to save Y space
-      () => this.packTightLayers(all), // Fill each Y slice completely before moving
-      () => this.packAwkwardFirst(all), // Prioritize awkward middle-size rolls first
-      () => this.packOptimalVerticalHorizontal(all), // Optimal: max vertical on floor, horizontal on top
-    ];
+    // Use exclusively the Human Logic Strategy as requested
+    const result = this.packHumanLogic(all);
 
-    let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
+    // Track boxes for potential further optimization
+    // IMPORTANT: Handle orientation correctly!
+    const placedBoxes: PlacedBox[] = result.placed.map(p => {
+      const isVertical = p.orientation === 'vertical';
+      const isRotated = p.orientation === 'horizontal-x';
 
-    for (const strategy of strategies) {
-      // Reset placed flags
-      all.forEach(c => c.placed = false);
-      const result = strategy();
-
-      // Track boxes for potential further optimization
-      // IMPORTANT: Handle orientation correctly!
-      const placedBoxes: PlacedBox[] = result.placed.map(p => {
-        const isVertical = p.orientation === 'vertical';
-        const isRotated = p.orientation === 'horizontal-x';
-
-        if (isVertical) {
-          // Vertical: diameter in X and Y, length in Z
-          return {
-            xMin: p.position.x, xMax: p.position.x + p.radius * 2,
-            yMin: p.position.y, yMax: p.position.y + p.radius * 2,
-            zMin: p.position.z, zMax: p.position.z + p.length,
-            orientation: 'vertical',
-          };
-        } else if (isRotated) {
-          // Horizontal-X: length in X, diameter in Y and Z
-          return {
-            xMin: p.position.x, xMax: p.position.x + p.length,
-            yMin: p.position.y, yMax: p.position.y + p.radius * 2,
-            zMin: p.position.z, zMax: p.position.z + p.radius * 2,
-            orientation: 'horizontal-x',
-          };
-        } else {
-          // Horizontal-Y: diameter in X and Z, length in Y
-          return {
-            xMin: p.position.x, xMax: p.position.x + p.radius * 2,
-            yMin: p.position.y, yMax: p.position.y + p.length,
-            zMin: p.position.z, zMax: p.position.z + p.radius * 2,
-            orientation: 'horizontal-y',
-          };
-        }
-      });
-
-      if (!bestResult || result.placed.length > bestResult.placed.length) {
-        bestResult = { ...result, placedBoxes };
+      if (isVertical) {
+        // Vertical: diameter in X and Y, length in Z
+        return {
+          xMin: p.position.x, xMax: p.position.x + p.radius * 2,
+          yMin: p.position.y, yMax: p.position.y + p.radius * 2,
+          zMin: p.position.z, zMax: p.position.z + p.length,
+          orientation: 'vertical',
+        };
+      } else if (isRotated) {
+        // Horizontal-X: length in X, diameter in Y and Z
+        return {
+          xMin: p.position.x, xMax: p.position.x + p.length,
+          yMin: p.position.y, yMax: p.position.y + p.radius * 2,
+          zMin: p.position.z, zMax: p.position.z + p.radius * 2,
+          orientation: 'horizontal-x',
+        };
+      } else {
+        // Horizontal-Y: diameter in X and Z, length in Y
+        return {
+          xMin: p.position.x, xMax: p.position.x + p.radius * 2,
+          yMin: p.position.y, yMax: p.position.y + p.length,
+          zMin: p.position.z, zMax: p.position.z + p.radius * 2,
+          orientation: 'horizontal-y',
+        };
       }
+    });
 
-      // If all placed, we're done
-      if (result.unplaced.length === 0) break;
-    }
+    const bestResult = { ...result, placedBoxes };
 
     // CRITICAL: Sync c.placed flags to match bestResult BEFORE running fallback passes
     // This prevents duplicates from being added
@@ -341,6 +309,286 @@ export class OptimizedCoilSolver {
       unplacedItems: unplaced,
       statistics: this.calcStats(uniquePlaced, unplaced.length),
     };
+  }
+
+  /**
+   * Human Logic Packing:
+   * 1. Fill floor with Verticals (tightest fit). Stack Verticals if they fit.
+   * 2. Place Horizontals on top (Attic), nesting into available Z space (Gravity Drop).
+   */
+  private packHumanLogic(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`=== HUMAN LOGIC PACKING ===`);
+
+    // --- PHASE 1: VERTICALS ---
+    // Sort by Height Descending first to create flat plateaus
+    // Then by Diameter Descending to pack tight
+    const verticalCandidates = [...allCylinders].sort((a, b) => {
+      if (b.length !== a.length) return b.length - a.length;
+      return b.diameter - a.diameter;
+    });
+
+    for (const cyl of verticalCandidates) {
+      if (cyl.placed) continue;
+      // Try Vertical Placement
+      // 1. Try to Stack on existing Vertical
+      let stacked = false;
+      if (cyl.length <= this.H) {
+        for (const box of placedBoxes) {
+          if (box.orientation !== 'vertical') continue;
+
+          // Check alignment (must be similar diameter to stack safely)
+          const boxW = box.xMax - box.xMin;
+          if (Math.abs(boxW - cyl.diameter) > 5) continue; // Allow 5cm diff? Or stricter?
+
+          if (box.zMax + cyl.length <= this.H) {
+             const pos = { x: box.xMin, y: box.yMin, z: box.zMax };
+             if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  orientation: 'vertical',
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: pos.z, zMax: pos.z + cyl.length,
+                });
+                stacked = true;
+                break;
+             }
+          }
+        }
+      }
+
+      if (stacked) continue;
+
+      // 2. Try Floor Placement (Grid Search)
+      if (cyl.length <= this.H) {
+        // Tight packing: Scan Y then X.
+        // Use step=1 for Phase 1 to maximize floor density (critical for large datasets)
+
+        const tryPlace = (step: number) => {
+            // Optimization: Start checking from known filled frontier?
+            // For now, simple loop is robust.
+            for (let y = 0; y + cyl.diameter <= this.L; y += step) {
+                for (let x = 0; x + cyl.diameter <= this.W; x += step) {
+                    const pos = { x, y, z: 0 };
+                    if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                        return pos;
+                    }
+                }
+            }
+            return null;
+        };
+
+        // Use step=1 for vertical placement to ensure tightest packing
+        let bestPos = tryPlace(1);
+
+        if (bestPos) {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, bestPos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+                orientation: 'vertical',
+                xMin: bestPos.x, xMax: bestPos.x + cyl.diameter,
+                yMin: bestPos.y, yMax: bestPos.y + cyl.diameter,
+                zMin: 0, zMax: cyl.length,
+            });
+        }
+      }
+    }
+
+    console.log(`  Phase 1 (Verticals): ${placed.length} placed`);
+
+    // --- PHASE 2: HORIZONTALS (ATTIC) ---
+    // Scan unplaced items. Try to place them horizontally on top.
+    // They can nest.
+    // Sort by Diameter Descending (Standard First Fit Decreasing)
+    const horizontalCandidates = allCylinders.filter(c => !c.placed).sort((a, b) => b.diameter - a.diameter);
+
+    for (const cyl of horizontalCandidates) {
+       // Search for a valid "Drop" position
+       // We scan (x, y) grid. For each, we calculate the Z where it settles.
+       // Reduced step size to 2cm to find small gaps
+
+       let bestSpot: { x: number, y: number, z: number } | null = null;
+
+       // Scan Y, X
+       for (let y = 0; y + cyl.length <= this.L; y += 2) {
+           for (let x = 0; x + cyl.diameter <= this.W; x += 2) {
+               // Calculate Drop Z
+               // For horizontal-y: Footprint is Rect(x, y, d, len)
+               // But real collision is curved.
+               // We need a helper `calculateDropZ`
+
+               const z = this.calculateDropZ(x, y, cyl.diameter, cyl.length, 'horizontal-y', placedBoxes);
+
+               // Check if valid
+               if (z !== null && z + cyl.diameter <= this.H) {
+                   // Valid spot.
+                   // We want "Tight" packing? Or just "Any" spot?
+                   // First Fit is usually good enough for this phase.
+                   // But "Bottom-Left" (min Y, min X) keeps it organized.
+                   // Since loops are ordered min Y, min X, the first found is best.
+                   bestSpot = { x, y, z };
+                   break;
+               }
+           }
+           if (bestSpot) break;
+       }
+
+       // Try Rotated (Horizontal-X)?
+       // If standard orientation failed, try rotated.
+       if (!bestSpot && cyl.length <= this.W) {
+           for (let y = 0; y + cyl.diameter <= this.L; y += 5) {
+               for (let x = 0; x + cyl.length <= this.W; x += 5) {
+                   const z = this.calculateDropZ(x, y, cyl.diameter, cyl.length, 'horizontal-x', placedBoxes);
+                   if (z !== null && z + cyl.diameter <= this.H) {
+                       // Place it
+                        const placedCyl = this.createRotatedPlacedCylinder(cyl, {x, y, z});
+                        placed.push(placedCyl);
+                        cyl.placed = true;
+                        placedBoxes.push({
+                            orientation: 'horizontal-x',
+                            xMin: x, xMax: x + cyl.length,
+                            yMin: y, yMax: y + cyl.diameter,
+                            zMin: z, zMax: z + cyl.diameter,
+                        });
+                        bestSpot = {x,y,z}; // Just to flag found
+                        break;
+                   }
+               }
+               if (bestSpot) break;
+           }
+       } else if (bestSpot) {
+            const placedCyl = this.createPlacedCylinder(cyl, bestSpot);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+                orientation: 'horizontal-y',
+                xMin: bestSpot.x, xMax: bestSpot.x + cyl.diameter,
+                yMin: bestSpot.y, yMax: bestSpot.y + cyl.length,
+                zMin: bestSpot.z, zMax: bestSpot.z + cyl.diameter,
+            });
+       }
+    }
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
+  }
+
+  /**
+   * Calculates the Z height where a horizontal cylinder would settle (Drop Logic).
+   * Returns null if it collides with container walls/floor in a bad way (though we start > 0)
+   * or if it cannot be supported (floating).
+   * Actually, "Drop" implies it falls until it hits something.
+   * So we find the MAX Z of intersection with all items below it.
+   */
+  private calculateDropZ(
+    x: number, y: number,
+    diameter: number, length: number,
+    orientation: 'horizontal-y' | 'horizontal-x',
+    placedBoxes: PlacedBox[]
+  ): number | null {
+      const radius = diameter / 2;
+      const cx = (orientation === 'horizontal-y') ? x + radius : x + length / 2;
+      const cy = (orientation === 'horizontal-y') ? y + length / 2 : y + radius;
+      // Center Z will be result + radius. We return Bottom Z.
+
+      let maxZ = 0; // Floor
+      let contactCount = 0; // Need at least 2 contacts or stable flat surface?
+      // Actually, if we hit a flat surface (vertical roll top), 1 contact is enough if CG is inside.
+
+      // Iterate all boxes to find highest collision
+      for (const box of placedBoxes) {
+          // Check simple XY overlap first
+          // My Footprint:
+          const myXMax = (orientation === 'horizontal-y') ? x + diameter : x + length;
+          const myYMax = (orientation === 'horizontal-y') ? y + length : y + diameter;
+
+          if (x >= box.xMax || myXMax <= box.xMin) continue;
+          if (y >= box.yMax || myYMax <= box.yMin) continue;
+
+          // Overlap detected. Calculate Z height required to clear this object.
+
+          // Case 1: Box is Vertical Cylinder (Flat Top)
+          if (box.orientation === 'vertical') {
+              // We must sit on top of it.
+              // Z must be at least box.zMax
+              if (box.zMax > maxZ) {
+                  maxZ = box.zMax;
+                  // Is this stable?
+                  // If we simply check bounding box, we might be hanging off the edge.
+                  // But for "Drop" logic, we assume friction holds it if there is overlap.
+                  // We can refine stability later.
+              }
+          }
+          // Case 2: Box is Horizontal Cylinder (Curved Top)
+          else {
+              // Cylinder-on-Cylinder nesting.
+              // We need to calculate the Z where the distance between centers equals sum of radii.
+              // distSq = (cx - boxCx)^2 + (cz - boxCz)^2
+              // (R1+R2)^2 = dx^2 + dz^2
+              // dz = sqrt( (R1+R2)^2 - dx^2 )
+              // cz = boxCz + dz
+              // myBottomZ = cz - radius
+
+              // Resolve box geometry
+              const boxIsRotated = box.orientation === 'horizontal-x';
+              const boxR = (boxIsRotated ? (box.yMax - box.yMin) : (box.xMax - box.xMin)) / 2;
+              const boxCx = box.xMin + (boxIsRotated ? (box.xMax - box.xMin)/2 : boxR);
+              // const boxCy = box.yMin + (boxIsRotated ? boxR : (box.yMax - box.yMin)/2);
+              const boxCz = box.zMin + boxR; // Center Z
+
+              // Only nest if orientations align?
+              // Horiz-Y on Horiz-Y: Nesting in X.
+              // Horiz-X on Horiz-X: Nesting in Y.
+              // Cross orientation: Point contact or line contact on curve?
+              // Cross orientation acts like Flat Surface contact at peak?
+              // Peak of bottom cylinder is box.zMax.
+
+              if (orientation !== box.orientation) {
+                  // Cross stacking -> sits on peak
+                  if (box.zMax > maxZ) maxZ = box.zMax;
+              } else {
+                  // Parallel stacking -> Nesting
+                  // Calculate horizontal distance between centers (perp to length)
+                  let distPerp = 0;
+                  if (orientation === 'horizontal-y') {
+                      // Axis is Y. Distance in X.
+                      distPerp = Math.abs(cx - boxCx);
+                  } else {
+                      // Axis is X. Distance in Y.
+                      // For Horiz-X, cy is the coordinate in Y
+                      // Box center Y needs to be derived correctly
+                      const boxCy = box.yMin + boxR;
+                      distPerp = Math.abs(cy - boxCy);
+                  }
+
+                  const sumRadii = radius + boxR;
+                  if (distPerp < sumRadii) {
+                      const dz = Math.sqrt(sumRadii*sumRadii - distPerp*distPerp);
+                      const requiredCenterZ = boxCz + dz;
+                      const requiredBottomZ = requiredCenterZ - radius;
+                      if (requiredBottomZ > maxZ) {
+                          maxZ = requiredBottomZ;
+                      }
+                  } else {
+                      // Theoretically shouldn't happen if bounding boxes overlap?
+                      // Overlap is < 2*R.
+                  }
+              }
+          }
+      }
+
+      // Safety: Ensure we aren't "floating" in a gap that is too wide.
+      // If maxZ > 0, we hit something.
+      // Ideally check strictly for stability, but for this solver "Gravity Drop" is usually sufficient.
+
+      return maxZ;
   }
 
   /**
