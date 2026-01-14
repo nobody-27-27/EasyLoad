@@ -63,9 +63,9 @@ export class OptimizedCoilSolver {
       }
     }
 
-    console.log(`=== CYLINDER PACKING (AI Multi-Strategy) ===`);
-    console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
-    console.log(`Cylinders to place: ${all.length}`);
+    // console.log(`=== CYLINDER PACKING (AI Multi-Strategy) ===`);
+    // console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
+    // console.log(`Cylinders to place: ${all.length}`);
 
     // --- STRATEGY DEFINITIONS ---
     const strategies = [
@@ -95,6 +95,14 @@ export class OptimizedCoilSolver {
         fn: () => this.packByPerfectColumns(all)
       },
       {
+        name: 'PlatformBuilder',
+        fn: () => this.packByPlatforms(all)
+      },
+      {
+        name: 'SmallestFirst', // Try placing small items on floor first
+        fn: () => this.packSmallestFirst(all)
+      },
+      {
         name: 'RandomizedSearch',
         fn: () => this.packRandomized(all)
       }
@@ -103,7 +111,7 @@ export class OptimizedCoilSolver {
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; score: number; name: string; placedBoxes: PlacedBox[] } | null = null;
 
     for (const strategy of strategies) {
-      console.log(`\n--- Running Strategy: ${strategy.name} ---`);
+      // console.log(`\n--- Running Strategy: ${strategy.name} ---`);
 
       // Reset placed status for clean run
       all.forEach(c => c.placed = false);
@@ -122,7 +130,7 @@ export class OptimizedCoilSolver {
 
       const score = currentPlacedCount * 1000;
 
-      console.log(`  > Result: ${currentPlacedCount}/${all.length} placed.`);
+      // console.log(`  > Result: ${currentPlacedCount}/${all.length} placed.`);
 
       if (!bestResult || score > bestResult.score) {
         bestResult = {
@@ -136,14 +144,14 @@ export class OptimizedCoilSolver {
 
       // Early exit if perfect
       if (currentPlacedCount === all.length) {
-        console.log(`  > Perfect match found!`);
+        // console.log(`  > Perfect match found!`);
         break;
       }
     }
 
     if (!bestResult) return this.emptyResult();
 
-    console.log(`\n=== BEST STRATEGY: ${bestResult.name} (${bestResult.placed.length}/${all.length}) ===`);
+    // console.log(`\n=== BEST STRATEGY: ${bestResult.name} (${bestResult.placed.length}/${all.length}) ===`);
 
     // Deduplicate placed items just in case
     const uniquePlaced: PlacedCylinder[] = [];
@@ -166,7 +174,7 @@ export class OptimizedCoilSolver {
 
   // --- RANDOMIZED STRATEGY ---
   private packRandomized(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-      console.log("  Running Randomized Search (50 iterations)...");
+      // console.log("  Running Randomized Search...");
       let bestLocalResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] } = { placed: [], unplaced: [] };
       let bestCount = -1;
 
@@ -182,12 +190,19 @@ export class OptimizedCoilSolver {
       for(let i=0; i<100; i++) {
           if (Date.now() - startTime > TIME_LIMIT_MS) break;
 
-          // Strategy Switch: First 30% iters are pure random, then Smart Shuffle
-          if (i < 30) {
+          // Strategy Switch:
+          // 0-20: Pure Random with Greedy
+          // 20-50: Smart Shuffle with Greedy
+          // 50-80: Random with PlatformBuilder (NEW)
+
+          let currentResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] };
+
+          if (i < 20) {
              this.shuffle(workingSet);
-          } else {
+             workingSet.forEach(c => c.placed = false);
+             currentResult = this.packGreedyStrictOrder(workingSet);
+          } else if (i < 50) {
              // Smart Shuffle: Sort by Volume Desc, keep top 30% fixed, shuffle rest
-             // This ensures big items are placed first (foundation), small items fill gaps
              workingSet.sort((a,b) => (b.diameter**2 * b.length) - (a.diameter**2 * a.length));
 
              const keepCount = Math.floor(workingSet.length * 0.3);
@@ -195,17 +210,43 @@ export class OptimizedCoilSolver {
              const shufflePart = workingSet.slice(keepCount);
              this.shuffle(shufflePart);
 
-             // Reconstruct working set (must modify array in place or copy back)
-             // splice to replace content
              workingSet.length = 0;
              workingSet.push(...fixedPart, ...shufflePart);
+
+             workingSet.forEach(c => c.placed = false);
+             currentResult = this.packGreedyStrictOrder(workingSet);
+          } else if (i < 80) {
+             // Priority Shuffle: Move "Difficult" items (Tall & Thin) to front
+             // Aspect ratio > 1.8 (like 77x152.4)
+             const difficult = [];
+             const easy = [];
+             for(const c of workingSet) {
+                 if (c.length / c.diameter > 1.8) difficult.push(c);
+                 else easy.push(c);
+             }
+             this.shuffle(difficult);
+             this.shuffle(easy);
+             workingSet.length = 0;
+             workingSet.push(...difficult, ...easy);
+
+             workingSet.forEach(c => c.placed = false);
+             currentResult = this.packGreedyStrictOrder(workingSet);
+          } else {
+             // Reverse Volume (Smallest First logic but randomized)
+             workingSet.sort((a,b) => (a.diameter**2 * a.length) - (b.diameter**2 * b.length));
+             this.shuffle(workingSet); // Mild shuffle? No, full shuffle destroys sort.
+             // Let's keep bottom 30% fixed (smallest)
+             const keepCount = Math.floor(workingSet.length * 0.3);
+             const fixedPart = workingSet.slice(0, keepCount);
+             const shufflePart = workingSet.slice(keepCount);
+             this.shuffle(shufflePart);
+
+             workingSet.length = 0;
+             workingSet.push(...fixedPart, ...shufflePart);
+
+             workingSet.forEach(c => c.placed = false);
+             currentResult = this.packGreedyStrictOrder(workingSet);
           }
-
-          // Reset flags
-          workingSet.forEach(c => c.placed = false);
-
-          // Run Greedy Strict Order (respects shuffle)
-          const currentResult = this.packGreedyStrictOrder(workingSet);
 
           // Aggressive pass locally to see true potential
            const pBoxes = currentResult.placed.map(p => this.createBoxFromPlaced(p));
@@ -218,7 +259,7 @@ export class OptimizedCoilSolver {
                    placed: [...currentResult.placed], // Clone the placed array
                    unplaced: workingSet.filter(c => !c.placed).map(c => c.item)
                };
-               console.log(`    Iter ${i}: Found new best: ${totalPlaced}`);
+               // console.log(`    Iter ${i}: Found new best: ${totalPlaced}`);
 
                // Save the cylinder IDs that were placed in this best run
                // We need this to restore the state later
@@ -230,22 +271,7 @@ export class OptimizedCoilSolver {
       // Restore the 'placed' flags on the original cylinder objects to match the best result
       allCylinders.forEach(c => c.placed = false);
       const placedIds = new Set(bestLocalResult.placed.map(p => p.uniqueId));
-      // Note: uniqueId in placed cylinder was generated from cylinder index usually?
-      // Actually my createPlacedCylinder uses: uniqueId: `cyl_${cyl.index}_...`
 
-      // We need to map back to the cylinder objects.
-      // The bestLocalResult.placed contains PlacedCylinder objects.
-      // We can iterate them and find the corresponding cylinder in allCylinders by checking some ID or index.
-      // My PlacedCylinder doesn't strictly store the original cylinder index in a clean property,
-      // but it does store the `item`.
-
-      // Better way: Re-run the placement for the best permutation? No, that's non-deterministic if I use random ID.
-      // I need to mark the cylinders as placed.
-
-      // The `allCylinders` are the SAME objects as in `workingSet`.
-      // `bestLocalResult.placed` refers to these items.
-
-      // Let's use the `index` property I added to the Cylinder interface!
       const placedIndices = new Set<number>();
       for (const p of bestLocalResult.placed) {
           // Extract index from uniqueId "cyl_INDEX_..."
@@ -367,7 +393,7 @@ export class OptimizedCoilSolver {
         const result = this.tryAggressivePlacement(cyl, placedBoxes);
         if (result) {
              // Strict check bounds
-             const EPS = 0.1;
+             const EPS = 0.001;
              let fits = true;
 
              if (result.orientation === 'horizontal-x') {
@@ -621,7 +647,7 @@ export class OptimizedCoilSolver {
   ): boolean {
     const { x, y, z } = pos;
     const radius = diameter / 2;
-    const EPS = 0.1;
+    const EPS = 0.001;
 
     if (x < -EPS || x + diameter > this.W + EPS) return false;
     if (y < -EPS || y + diameter > this.L + EPS) return false;
@@ -795,6 +821,62 @@ export class OptimizedCoilSolver {
       return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
   }
 
+  private packSmallestFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+      allCylinders.forEach(c => c.placed = false);
+      // Sort by Diameter Ascending
+      const sorted = [...allCylinders].sort((a,b) => a.diameter - b.diameter);
+
+      const placed: PlacedCylinder[] = [];
+      const placedBoxes: PlacedBox[] = [];
+
+      // Greedy placement
+      for(const cyl of sorted) {
+          // Prioritize Vertical Floor for small items to ensure they get a spot
+           let placedV = false;
+           if (cyl.length <= this.H) {
+               // Try tight grid search for vertical floor
+               for (let y = 0; y + cyl.diameter <= this.L; y += 1) {
+                   for(let x=0; x+cyl.diameter <= this.W; x += 1) {
+                       const pos = {x,y,z:0};
+                       if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                            const p = this.createVerticalPlacedCylinder(cyl, pos);
+                            placed.push(p);
+                            placedBoxes.push(this.createBoxFromPlaced(p));
+                            cyl.placed = true;
+                            placedV = true;
+                            // Break
+                            y=this.L; x=this.W;
+                       }
+                   }
+               }
+           }
+
+           if (!placedV) {
+                // Fallback to Aggressive
+                const res = this.tryAggressivePlacement(cyl, placedBoxes);
+                if (res) {
+                    if (res.orientation === 'vertical') {
+                        const p = this.createVerticalPlacedCylinder(cyl, res.pos);
+                        placed.push(p);
+                        placedBoxes.push(this.createBoxFromPlaced(p));
+                        cyl.placed = true;
+                    } else if (res.orientation === 'horizontal-y') {
+                        const p = this.createPlacedCylinder(cyl, res.pos);
+                        placed.push(p);
+                        placedBoxes.push(this.createBoxFromPlaced(p));
+                        cyl.placed = true;
+                    } else {
+                        const p = this.createRotatedPlacedCylinder(cyl, res.pos);
+                        placed.push(p);
+                        placedBoxes.push(this.createBoxFromPlaced(p));
+                        cyl.placed = true;
+                    }
+                }
+           }
+      }
+      return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
+  }
+
   private packByPerfectColumns(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
      allCylinders.forEach(c => c.placed = false);
      const placed: PlacedCylinder[] = [];
@@ -892,6 +974,107 @@ export class OptimizedCoilSolver {
      return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
   }
 
+  private packByPlatforms(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+     allCylinders.forEach(c => c.placed = false);
+     const placed: PlacedCylinder[] = [];
+     const placedBoxes: PlacedBox[] = [];
+
+     // 1. Group by HEIGHT (bucketed to nearest 2cm to allow slight variance)
+     const heightGroups = new Map<number, Cylinder[]>();
+     for(const c of allCylinders) {
+         if (c.length > this.H) continue; // Skip too tall for vertical
+
+         // Bucket key
+         const hKey = Math.floor(c.length / 2) * 2;
+         if (!heightGroups.has(hKey)) heightGroups.set(hKey, []);
+         heightGroups.get(hKey)!.push(c);
+     }
+
+     // 2. Sort groups by Height Descending (Tallest platforms first -> Staircase)
+     const groupList = Array.from(heightGroups.entries()).map(([h, list]) => ({
+         height: h,
+         list,
+         area: list.reduce((sum, c) => sum + c.diameter * c.diameter, 0)
+     })).sort((a,b) => b.height - a.height);
+
+     // 3. Place Platforms (Verticals)
+     let currentY = 0;
+     for(const group of groupList) {
+         // Sort items in group by diameter desc for better packing
+         group.list.sort((a,b) => b.diameter - a.diameter);
+
+         let rowY = currentY;
+         let rowH = 0;
+         let rowX = 0;
+
+         // Simple shelf packing for the platform
+         for(const cyl of group.list) {
+             if (cyl.placed) continue;
+
+             if (rowX + cyl.diameter > this.W) {
+                 // Next row
+                 rowY += rowH;
+                 rowX = 0;
+                 rowH = 0;
+             }
+
+             if (rowY + cyl.diameter > this.L) break; // Container full
+
+             const pos = { x: rowX, y: rowY, z: 0 };
+             if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                 const p = this.createVerticalPlacedCylinder(cyl, pos);
+                 placed.push(p);
+                 placedBoxes.push(this.createBoxFromPlaced(p));
+                 cyl.placed = true;
+
+                 rowX += cyl.diameter;
+                 rowH = Math.max(rowH, cyl.diameter);
+             }
+         }
+         currentY = Math.max(currentY, rowY + rowH);
+     }
+
+     // 4. Fill the "Attic" (Space above verticals) with Horizontal items
+     //    Prioritize placing them on the largest flat surfaces formed by the groups.
+     //    Since we just did an Aggressive Pass at the end anyway, let's just let Aggressive Pass handle it.
+     //    But we might want to be smarter about orientation?
+
+     // Actually, let's explicitly try to fill the top with horizontal items first before filling gaps.
+     const remaining = allCylinders.filter(c => !c.placed);
+     // Sort by diameter desc (easier to place big items first)
+     remaining.sort((a,b) => b.diameter - a.diameter);
+
+     for(const cyl of remaining) {
+         // Try Horizontal-Y first (often better for rolling)
+         const res = this.tryAggressivePlacement(cyl, placedBoxes);
+         if (res && res.pos.z > 0) { // Only accept if it's on top (Attic)
+             // ... actually tryAggressivePlacement handles validity.
+             // We just commit it.
+             if (res.orientation === 'vertical') {
+                const p = this.createVerticalPlacedCylinder(cyl, res.pos);
+                placed.push(p);
+                placedBoxes.push(this.createBoxFromPlaced(p));
+                cyl.placed = true;
+             } else if (res.orientation === 'horizontal-y') {
+                const p = this.createPlacedCylinder(cyl, res.pos);
+                placed.push(p);
+                placedBoxes.push(this.createBoxFromPlaced(p));
+                cyl.placed = true;
+             } else {
+                const p = this.createRotatedPlacedCylinder(cyl, res.pos);
+                placed.push(p);
+                placedBoxes.push(this.createBoxFromPlaced(p));
+                cyl.placed = true;
+             }
+         }
+     }
+
+     // 5. Final mop up
+     this.runAggressivePass(allCylinders, placedBoxes, placed);
+
+     return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
+  }
+
   // --- PRIMITIVES ---
 
   private tryAggressivePlacement(
@@ -966,7 +1149,7 @@ export class OptimizedCoilSolver {
     const radius = diameter / 2;
     const cx = x + radius;
     const cz = z + radius;
-    const EPS = 0.1;
+    const EPS = 0.001;
 
     if (x < -EPS || x + diameter > this.W + EPS) return false;
     if (y < -EPS || y + length > this.L + EPS) return false;
@@ -1006,7 +1189,7 @@ export class OptimizedCoilSolver {
     const radius = diameter / 2;
     const cy = y + radius;
     const cz = z + radius;
-    const EPS = 0.1;
+    const EPS = 0.001;
 
     if (x < -EPS || x + length > this.W + EPS) return false;
     if (y < -EPS || y + diameter > this.L + EPS) return false;
