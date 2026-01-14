@@ -66,6 +66,22 @@ export class OptimizedCoilSolver {
     // --- STRATEGY DEFINITIONS ---
     const strategies = [
       {
+        name: 'PerfectColumns_Horizontal',
+        fn: () => this.packByPerfectColumns(all, 'horizontal')
+      },
+      {
+        name: 'Horizontal_MaxDensity',
+        fn: () => this.packHorizontalDominant(all)
+      },
+      {
+        name: 'SmartGrid_LengthDesc',
+        fn: () => this.packSmartGrid(all, 'length-desc')
+      },
+      {
+        name: 'SmartGrid_DiamDesc',
+        fn: () => this.packSmartGrid(all, 'diameter-desc')
+      },
+      {
         name: 'DifficultFirst',
         fn: () => this.packDifficultFirst(all)
       },
@@ -78,14 +94,6 @@ export class OptimizedCoilSolver {
         }
       },
       {
-        name: 'HumanLogic_HeightFirst',
-        fn: () => this.packHumanLogic(all, 'height-desc')
-      },
-      {
-        name: 'HumanLogic_DiameterFirst',
-        fn: () => this.packHumanLogic(all, 'diameter-desc')
-      },
-      {
         name: 'VerticalPriority',
         fn: () => this.packVerticalPriority(all)
       },
@@ -94,20 +102,12 @@ export class OptimizedCoilSolver {
         fn: () => this.packMixedOrientations(all)
       },
       {
-        name: 'LargestFirst',
-        fn: () => this.packLargestFirst(all)
-      },
-      {
         name: 'PerfectColumns',
-        fn: () => this.packByPerfectColumns(all)
+        fn: () => this.packByPerfectColumns(all, 'vertical')
       },
       {
         name: 'PlatformBuilder',
         fn: () => this.packByPlatforms(all)
-      },
-      {
-        name: 'SmallestFirst',
-        fn: () => this.packSmallestFirst(all)
       },
       {
         name: 'RandomizedSearch',
@@ -116,6 +116,8 @@ export class OptimizedCoilSolver {
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; score: number; name: string; placedBoxes: PlacedBox[] } | null = null;
+
+    console.log(`Starting Multi-Strategy Solver for ${all.length} items...`);
 
     for (const strategy of strategies) {
       // Reset placed status for clean run
@@ -133,6 +135,7 @@ export class OptimizedCoilSolver {
       // Recalculate true placed count
       const currentPlacedCount = all.filter(c => c.placed).length;
 
+      // Score: Placed Count * 1000 - Volume Waste
       const score = currentPlacedCount * 1000;
 
       if (!bestResult || score > bestResult.score) {
@@ -153,6 +156,8 @@ export class OptimizedCoilSolver {
 
     if (!bestResult) return this.emptyResult();
 
+    console.log(`Winner: ${bestResult.name} (${bestResult.placed.length}/${all.length})`);
+
     // Deduplicate placed items just in case
     const uniquePlaced: PlacedCylinder[] = [];
     const seenIds = new Set<string>();
@@ -172,128 +177,27 @@ export class OptimizedCoilSolver {
     };
   }
 
-  // --- RANDOMIZED STRATEGY ---
-  private packRandomized(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-      let bestLocalResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] } = { placed: [], unplaced: [] };
-      let bestCount = -1;
+  // --- PACKING CORE (Refactored) ---
 
-      const workingSet = [...allCylinders];
-      const startTime = Date.now();
-      const TIME_LIMIT_MS = 15000; // 15 seconds max
-
-      for(let i=0; i<100; i++) {
-          if (Date.now() - startTime > TIME_LIMIT_MS) break;
-
-          let currentResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] };
-
-          if (i < 20) {
-             this.shuffle(workingSet);
-             workingSet.forEach(c => c.placed = false);
-             currentResult = this.packGreedyStrictOrder(workingSet);
-          } else if (i < 50) {
-             // Smart Shuffle: Sort by Volume Desc
-             workingSet.sort((a,b) => (b.diameter**2 * b.length) - (a.diameter**2 * a.length));
-
-             const keepCount = Math.floor(workingSet.length * 0.3);
-             const fixedPart = workingSet.slice(0, keepCount);
-             const shufflePart = workingSet.slice(keepCount);
-             this.shuffle(shufflePart);
-
-             workingSet.length = 0;
-             workingSet.push(...fixedPart, ...shufflePart);
-
-             workingSet.forEach(c => c.placed = false);
-             currentResult = this.packGreedyStrictOrder(workingSet);
-          } else if (i < 80) {
-             // Priority Shuffle: Difficult items first
-             const difficult = [];
-             const easy = [];
-             for(const c of workingSet) {
-                 if (c.length / c.diameter > 1.8) difficult.push(c);
-                 else easy.push(c);
-             }
-             this.shuffle(difficult);
-             this.shuffle(easy);
-             workingSet.length = 0;
-             workingSet.push(...difficult, ...easy);
-
-             workingSet.forEach(c => c.placed = false);
-             currentResult = this.packGreedyStrictOrder(workingSet);
-          } else {
-             // Reverse Volume
-             workingSet.sort((a,b) => (a.diameter**2 * a.length) - (b.diameter**2 * b.length));
-             this.shuffle(workingSet);
-
-             const keepCount = Math.floor(workingSet.length * 0.3);
-             const fixedPart = workingSet.slice(0, keepCount);
-             const shufflePart = workingSet.slice(keepCount);
-             this.shuffle(shufflePart);
-
-             workingSet.length = 0;
-             workingSet.push(...fixedPart, ...shufflePart);
-
-             workingSet.forEach(c => c.placed = false);
-             currentResult = this.packGreedyStrictOrder(workingSet);
-          }
-
-           const pBoxes = currentResult.placed.map(p => this.createBoxFromPlaced(p));
-           this.runAggressivePass(workingSet, pBoxes, currentResult.placed);
-           const totalPlaced = currentResult.placed.length;
-
-           if (totalPlaced > bestCount) {
-               bestCount = totalPlaced;
-               bestLocalResult = {
-                   placed: [...currentResult.placed], // Clone the placed array
-                   unplaced: workingSet.filter(c => !c.placed).map(c => c.item)
-               };
-               if (totalPlaced === allCylinders.length) break;
-           }
-      }
-
-      allCylinders.forEach(c => c.placed = false);
-      const placedIndices = new Set<number>();
-      for (const p of bestLocalResult.placed) {
-          const parts = p.uniqueId.split('_');
-          if (parts.length >= 2) {
-              const idx = parseInt(parts[1], 10);
-              if (!isNaN(idx)) placedIndices.add(idx);
-          }
-      }
-
-      allCylinders.forEach(c => {
-          if (placedIndices.has(c.index)) c.placed = true;
-      });
-
-      return bestLocalResult;
-  }
-
-  private packGreedyStrictOrder(cylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+  private packGreedyStrictOrder(
+      cylinders: Cylinder[],
+      mode: 'vertical-first' | 'horizontal-first' = 'vertical-first'
+  ): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
       const placed: PlacedCylinder[] = [];
       const placedBoxes: PlacedBox[] = [];
 
       for(const cyl of cylinders) {
           if (cyl.placed) continue;
 
-          // Try Vertical first
-          if (cyl.length <= this.H) {
-               let found = false;
-               for (let y = 0; y + cyl.diameter <= this.L; y += 1) {
-                   for(let x=0; x+cyl.diameter <= this.W; x += 1) {
-                       const pos = {x,y,z:0};
-                       if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                            const p = this.createVerticalPlacedCylinder(cyl, pos);
-                            placed.push(p);
-                            placedBoxes.push(this.createBoxFromPlaced(p));
-                            cyl.placed = true;
-                            found = true;
-                            y=this.L; x=this.W;
-                       }
-                   }
-               }
-               if (found) continue;
+          let res;
+          if (mode === 'vertical-first') {
+              res = this.findVerticalCandidate(cyl, placedBoxes);
+              if (!res) res = this.findHorizontalCandidate(cyl, placedBoxes);
+          } else {
+              res = this.findHorizontalCandidate(cyl, placedBoxes);
+              if (!res) res = this.findVerticalCandidate(cyl, placedBoxes);
           }
 
-          const res = this.tryAggressivePlacement(cyl, placedBoxes);
           if (res) {
              if (res.orientation === 'vertical') {
                 const p = this.createVerticalPlacedCylinder(cyl, res.pos);
@@ -313,8 +217,411 @@ export class OptimizedCoilSolver {
              }
           }
       }
-
       return { placed, unplaced: cylinders.filter(c => !c.placed).map(c => c.item) };
+  }
+
+  private tryAggressivePlacement(
+    cyl: Cylinder,
+    placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'vertical' | 'horizontal-x' } | null {
+      // Default: Vertical First
+      const v = this.findVerticalCandidate(cyl, placedBoxes);
+      if (v) return v;
+      return this.findHorizontalCandidate(cyl, placedBoxes);
+  }
+
+  // --- PRIMITIVE FINDERS ---
+
+  private findVerticalCandidate(
+      cyl: Cylinder,
+      placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'vertical' } | null {
+      const { diameter, length } = cyl;
+      if (length > this.H) return null;
+
+      // Candidate Points
+      const xCandidates = new Set<number>(); xCandidates.add(0);
+      const yCandidates = new Set<number>(); yCandidates.add(0);
+      const zCandidates = new Set<number>(); zCandidates.add(0);
+
+      for(const b of placedBoxes) {
+          if (b.xMax <= this.W) xCandidates.add(b.xMax);
+          if (b.yMax <= this.L) yCandidates.add(b.yMax);
+          if (b.zMax + length <= this.H) zCandidates.add(b.zMax);
+      }
+
+      const sortedX = Array.from(xCandidates).sort((a,b) => a-b);
+      const sortedY = Array.from(yCandidates).sort((a,b) => a-b);
+      const sortedZ = Array.from(zCandidates).sort((a,b) => a-b);
+
+      for(const z of sortedZ) {
+         for (const y of sortedY) {
+             if (y + diameter > this.L) break;
+             for(const x of sortedX) {
+                 if (x + diameter > this.W) break;
+
+                 const pos = { x, y, z };
+                 if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
+                      return { pos, orientation: 'vertical' };
+                 }
+             }
+         }
+      }
+      return null;
+  }
+
+  private findHorizontalCandidate(
+      cyl: Cylinder,
+      placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'horizontal-x' } | null {
+      const { diameter, length } = cyl;
+
+      const xCandidates = new Set<number>(); xCandidates.add(0);
+      const yCandidates = new Set<number>(); yCandidates.add(0);
+      for(const b of placedBoxes) {
+          if (b.xMax <= this.W) xCandidates.add(b.xMax);
+          if (b.yMax <= this.L) yCandidates.add(b.yMax);
+      }
+      const sortedX = Array.from(xCandidates).sort((a,b) => a-b);
+      const sortedY = Array.from(yCandidates).sort((a,b) => a-b);
+
+      let bestSol: { pos: { x: number, y: number, z: number }, orientation: 'horizontal-y' | 'horizontal-x', z: number } | null = null;
+
+      // 1. Horizontal-Y
+      for (const y of sortedY) {
+          if (y + length > this.L) break;
+          for (const x of sortedX) {
+              if (x + diameter > this.W) break;
+
+              // Floor First (Optimization)
+              const posFloor = { x, y, z: 0 };
+              if (this.canPlace(posFloor, diameter, length, placedBoxes)) {
+                  if (!bestSol || 0 < bestSol.z) {
+                      bestSol = { pos: posFloor, orientation: 'horizontal-y', z: 0 };
+                  }
+              }
+
+              // Stack
+              const z = this.calculateDropZ(x, y, diameter, length, 'horizontal-y', placedBoxes);
+              if (z > 0 && z + diameter <= this.H) {
+                  const pos = { x, y, z };
+                  if (this.canPlace(pos, diameter, length, placedBoxes)) {
+                      if (!bestSol || z < bestSol.z) {
+                          bestSol = { pos, orientation: 'horizontal-y', z };
+                      }
+                  }
+              }
+          }
+      }
+
+      // 2. Horizontal-X
+      if (length <= this.W) {
+          for (const y of sortedY) {
+              if (y + diameter > this.L) break;
+              for (const x of sortedX) {
+                  if (x + length > this.W) break;
+
+                  // Floor
+                  const posFloor = { x, y, z: 0 };
+                  if (this.canPlaceRotated(posFloor, diameter, length, placedBoxes)) {
+                      if (!bestSol || 0 < bestSol.z) {
+                          bestSol = { pos: posFloor, orientation: 'horizontal-x', z: 0 };
+                      }
+                  }
+
+                  // Stack
+                  const z = this.calculateDropZ(x, y, diameter, length, 'horizontal-x', placedBoxes);
+                  if (z > 0 && z + diameter <= this.H) {
+                      const pos = { x, y, z };
+                      if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
+                          if (!bestSol || z < bestSol.z) {
+                              bestSol = { pos, orientation: 'horizontal-x', z };
+                          }
+                      }
+                  }
+              }
+          }
+      }
+
+      if (bestSol) {
+          return { pos: bestSol.pos, orientation: bestSol.orientation };
+      }
+      return null;
+  }
+
+  // --- NEW STRATEGIES ---
+
+  private packHorizontalDominant(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+      allCylinders.forEach(c => c.placed = false);
+      const sorted = [...allCylinders].sort((a,b) => {
+          const volA = a.diameter * a.diameter * a.length;
+          const volB = b.diameter * b.diameter * b.length;
+          return volB - volA;
+      });
+      return this.packGreedyStrictOrder(sorted, 'horizontal-first');
+  }
+
+  private packSmartGrid(allCylinders: Cylinder[], mode: 'diameter-desc' | 'length-desc'): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+        allCylinders.forEach(c => c.placed = false);
+        const placed: PlacedCylinder[] = [];
+        const placedBoxes: PlacedBox[] = [];
+
+        let currentY = 0;
+
+        if (mode === 'length-desc') {
+             const lengthGroups = new Map<number, Cylinder[]>();
+             for(const c of allCylinders) {
+                 const l = Math.floor(c.length);
+                 if(!lengthGroups.has(l)) lengthGroups.set(l, []);
+                 lengthGroups.get(l)!.push(c);
+             }
+             const sortedLengths = Array.from(lengthGroups.keys()).sort((a,b) => b - a);
+
+             for(const l of sortedLengths) {
+                 const lItems = lengthGroups.get(l)!;
+                 const dGroups = new Map<number, Cylinder[]>();
+                 for(const c of lItems) {
+                     if(!dGroups.has(c.diameter)) dGroups.set(c.diameter, []);
+                     dGroups.get(c.diameter)!.push(c);
+                 }
+                 const sortedDiams = Array.from(dGroups.keys()).sort((a,b) => b - a);
+
+                 for(const d of sortedDiams) {
+                     const group = dGroups.get(d)!;
+                     this.packRowGroup(group, d, placed, placedBoxes, currentY);
+                 }
+
+                 let maxY = currentY;
+                 for(const b of placedBoxes) if(b.yMax > maxY) maxY = b.yMax;
+                 currentY = maxY;
+             }
+        } else {
+             const dGroups = new Map<number, Cylinder[]>();
+             for(const c of allCylinders) {
+                 if(!dGroups.has(c.diameter)) dGroups.set(c.diameter, []);
+                 dGroups.get(c.diameter)!.push(c);
+             }
+             const sortedDiams = Array.from(dGroups.keys()).sort((a,b) => b - a);
+
+             for(const d of sortedDiams) {
+                 const group = dGroups.get(d)!;
+                 group.sort((a,b) => b.length - a.length);
+                 this.packRowGroup(group, d, placed, placedBoxes, currentY);
+
+                 let maxY = currentY;
+                 for(const b of placedBoxes) if(b.yMax > maxY) maxY = b.yMax;
+                 currentY = maxY;
+             }
+        }
+
+        this.runAggressivePass(allCylinders, placedBoxes, placed);
+        return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
+  }
+
+  private packRowGroup(group: Cylinder[], d: number, placed: PlacedCylinder[], placedBoxes: PlacedBox[], startY: number) {
+      let rowX = 0;
+      let rowY = startY;
+
+      for(const cyl of group) {
+           if(cyl.placed) continue;
+           if(cyl.length > this.H) continue;
+
+           if (rowX + d > this.W) {
+               rowX = 0;
+               rowY += d;
+           }
+
+           if (rowY + d > this.L) break;
+
+           const pos = { x: rowX, y: rowY, z: 0 };
+           if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+                const p = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(p);
+                placedBoxes.push(this.createBoxFromPlaced(p));
+                cyl.placed = true;
+
+                rowX += d;
+           }
+      }
+  }
+
+  private packByPerfectColumns(
+      allCylinders: Cylinder[],
+      mode: 'vertical' | 'horizontal' = 'vertical'
+  ): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+     allCylinders.forEach(c => c.placed = false);
+     const placed: PlacedCylinder[] = [];
+     const placedBoxes: PlacedBox[] = [];
+
+     const groups = new Map<number, Cylinder[]>();
+     for(const c of allCylinders) {
+         if (!groups.has(c.diameter)) groups.set(c.diameter, []);
+         groups.get(c.diameter)!.push(c);
+     }
+
+     const groupData: { diameter: number; efficiency: number; cylinders: Cylinder[]; cols: number }[] = [];
+     for(const [d, cyls] of groups.entries()) {
+         const cols = Math.floor(this.W / d);
+         const efficiency = (cols * d) / this.W;
+         groupData.push({ diameter: d, efficiency, cylinders: cyls, cols });
+     }
+
+     groupData.sort((a,b) => {
+         if (Math.abs(b.efficiency - a.efficiency) > 0.05) return b.efficiency - a.efficiency;
+         return b.cylinders.length - a.cylinders.length;
+     });
+
+     let currentY = 0;
+
+     for(const group of groupData) {
+         const { diameter, cylinders, cols } = group;
+         if (cols === 0) continue;
+
+         cylinders.sort((a,b) => b.length - a.length);
+         let rowY = currentY;
+         let rowMaxYStep = 0;
+
+         const colZ = new Array(cols).fill(0);
+         const colX = Array.from({length: cols}, (_, i) => i * diameter);
+
+         let cylIdx = 0;
+         while(cylIdx < cylinders.length) {
+             const cyl = cylinders[cylIdx];
+             if (cyl.placed) {
+                 cylIdx++;
+                 continue;
+             }
+
+             let placedInRow = false;
+
+             for(let cIdx = 0; cIdx < cols; cIdx++) {
+                 const x = colX[cIdx];
+                 const z = colZ[cIdx];
+
+                 let itemH = 0;
+                 let itemYDim = 0;
+
+                 if (mode === 'vertical') {
+                     itemH = cyl.length;
+                     itemYDim = diameter;
+                 } else {
+                     itemH = diameter;
+                     itemYDim = cyl.length;
+                 }
+
+                 if (z + itemH > this.H) continue;
+                 if (x + diameter > this.W) continue;
+                 if (rowY + itemYDim > this.L) break;
+
+                 const pos = { x, y: rowY, z };
+                 let success = false;
+                 let p: PlacedCylinder;
+
+                 if (mode === 'vertical') {
+                     if (this.canPlaceVertical(pos, diameter, cyl.length, placedBoxes)) {
+                         p = this.createVerticalPlacedCylinder(cyl, pos);
+                         success = true;
+                     }
+                 } else {
+                     if (this.canPlace(pos, diameter, cyl.length, placedBoxes)) {
+                         p = this.createPlacedCylinder(cyl, pos);
+                         success = true;
+                     }
+                 }
+
+                 if (success) {
+                     placed.push(p!);
+                     placedBoxes.push(this.createBoxFromPlaced(p!));
+                     cyl.placed = true;
+                     colZ[cIdx] += itemH;
+                     rowMaxYStep = Math.max(rowMaxYStep, itemYDim);
+                     placedInRow = true;
+                     break;
+                 }
+             }
+
+             if (placedInRow) {
+                 cylIdx++;
+             } else {
+                 if (rowMaxYStep === 0) {
+                     cylIdx++;
+                     continue;
+                 }
+
+                 rowY += rowMaxYStep;
+                 if (rowY >= this.L) break;
+
+                 rowMaxYStep = 0;
+                 colZ.fill(0);
+
+             }
+         }
+         currentY = rowY + rowMaxYStep;
+     }
+
+     this.runAggressivePass(allCylinders, placedBoxes, placed);
+     return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
+  }
+
+  // --- RANDOMIZED STRATEGY ---
+  private packRandomized(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+      let bestLocalResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] } = { placed: [], unplaced: [] };
+      let bestCount = -1;
+
+      const workingSet = [...allCylinders];
+      const startTime = Date.now();
+      const TIME_LIMIT_MS = 15000;
+
+      for(let i=0; i<50; i++) { // Reduced iterations as greedy is now smarter/different
+          if (Date.now() - startTime > TIME_LIMIT_MS) break;
+
+          let currentResult: { placed: PlacedCylinder[]; unplaced: CargoItem[] };
+
+          if (i < 10) {
+             this.shuffle(workingSet);
+             workingSet.forEach(c => c.placed = false);
+             currentResult = this.packGreedyStrictOrder(workingSet);
+          } else {
+             // Smart Shuffle
+             workingSet.sort((a,b) => (b.diameter**2 * b.length) - (a.diameter**2 * a.length));
+             const keepCount = Math.floor(workingSet.length * 0.4);
+             const fixedPart = workingSet.slice(0, keepCount);
+             const shufflePart = workingSet.slice(keepCount);
+             this.shuffle(shufflePart);
+             workingSet.length = 0;
+             workingSet.push(...fixedPart, ...shufflePart);
+
+             workingSet.forEach(c => c.placed = false);
+             currentResult = this.packGreedyStrictOrder(workingSet);
+          }
+
+           const pBoxes = currentResult.placed.map(p => this.createBoxFromPlaced(p));
+           this.runAggressivePass(workingSet, pBoxes, currentResult.placed);
+           const totalPlaced = currentResult.placed.length;
+
+           if (totalPlaced > bestCount) {
+               bestCount = totalPlaced;
+               bestLocalResult = {
+                   placed: [...currentResult.placed],
+                   unplaced: workingSet.filter(c => !c.placed).map(c => c.item)
+               };
+               if (totalPlaced === allCylinders.length) break;
+           }
+      }
+
+      allCylinders.forEach(c => c.placed = false);
+      const placedIndices = new Set<number>();
+      for (const p of bestLocalResult.placed) {
+          const parts = p.uniqueId.split('_');
+          if (parts.length >= 2) {
+              const idx = parseInt(parts[1], 10);
+              if (!isNaN(idx)) placedIndices.add(idx);
+          }
+      }
+      allCylinders.forEach(c => {
+          if (placedIndices.has(c.index)) c.placed = true;
+      });
+      return bestLocalResult;
   }
 
   private shuffle(array: any[]) {
@@ -322,6 +629,55 @@ export class OptimizedCoilSolver {
         const j = Math.floor(Math.random() * (i + 1));
         [array[i], array[j]] = [array[j], array[i]];
       }
+  }
+
+  // --- FACTORY METHODS ---
+  private createVerticalPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
+    const radius = cyl.diameter / 2;
+    return {
+      item: cyl.item, uniqueId: `cyl_${cyl.index}_v`,
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      center: { x: pos.x + radius, y: pos.y + radius, z: pos.z + cyl.length / 2 },
+      radius, length: cyl.length, orientation: 'vertical',
+      rotation: ORIENTATION_ROTATIONS['vertical'], layerId: 0, supportedBy: [],
+    };
+  }
+
+  private createPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
+    const radius = cyl.diameter / 2;
+    return {
+      item: cyl.item, uniqueId: `cyl_${cyl.index}_h`,
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      center: { x: pos.x + radius, y: pos.y + cyl.length / 2, z: pos.z + radius },
+      radius, length: cyl.length, orientation: 'horizontal-y',
+      rotation: ORIENTATION_ROTATIONS['horizontal-y'], layerId: 0, supportedBy: [],
+    };
+  }
+
+  private createRotatedPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
+    const radius = cyl.diameter / 2;
+    return {
+      item: cyl.item, uniqueId: `cyl_${cyl.index}_r`,
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      center: { x: pos.x + cyl.length / 2, y: pos.y + radius, z: pos.z + radius },
+      radius, length: cyl.length, orientation: 'horizontal-x',
+      rotation: ORIENTATION_ROTATIONS['horizontal-x'], layerId: 0, supportedBy: [],
+    };
+  }
+
+  private calcStats(placed: PlacedCylinder[], failed: number): PackingStatistics {
+      let vol = 0;
+      placed.forEach(p => vol += Math.PI * p.radius**2 * p.length);
+      return {
+          totalVolumePlaced: vol,
+          containerVolumeUsed: this.W*this.L*this.H,
+          volumeEfficiency: vol / (this.W*this.L*this.H),
+          layerCount: 1, itemsPlaced: placed.length, itemsFailed: failed
+      };
+  }
+
+  private emptyResult(): CoilSolverResult {
+    return { placedCylinders: [], unplacedItems: [], statistics: { totalVolumePlaced: 0, containerVolumeUsed: 0, volumeEfficiency: 0, layerCount: 0, itemsPlaced: 0, itemsFailed: 0 } };
   }
 
   // --- HELPERS ---
@@ -360,8 +716,7 @@ export class OptimizedCoilSolver {
 
       let added = 0;
 
-      // OPTIMIZATION: Sort by Volume Descending (Largest First) to pack big items into attic first.
-      // Falls back to diameter if volumes similar.
+      // Sort by Volume Descending (Largest First)
       unplaced.sort((a,b) => {
           const volA = a.diameter * a.diameter * a.length;
           const volB = b.diameter * b.diameter * b.length;
@@ -371,10 +726,10 @@ export class OptimizedCoilSolver {
       for (const cyl of unplaced) {
         const result = this.tryAggressivePlacement(cyl, placedBoxes);
         if (result) {
-             // Strict check bounds - redundant but safe
              const EPS = 0.001;
              let fits = true;
 
+             // Double check bounds (Redundant but safe)
              const box: any = {};
              if (result.orientation === 'horizontal-x') {
                  box.xMax = result.pos.x + cyl.length; box.yMax = result.pos.y + cyl.diameter; box.zMax = result.pos.z + cyl.diameter;
@@ -384,9 +739,10 @@ export class OptimizedCoilSolver {
                  box.xMax = result.pos.x + cyl.diameter; box.yMax = result.pos.y + cyl.length; box.zMax = result.pos.z + cyl.diameter;
              }
 
-             if (result.pos.x < -EPS || box.xMax > this.W + EPS) fits = false;
-             if (result.pos.y < -EPS || box.yMax > this.L + EPS) fits = false;
-             if (result.pos.z < -EPS || box.zMax > this.H + EPS) fits = false;
+             // STRICT BOUNDARY CHECK: No EPS on Max
+             if (result.pos.x < -EPS || box.xMax > this.W) fits = false;
+             if (result.pos.y < -EPS || box.yMax > this.L) fits = false;
+             if (result.pos.z < -EPS || box.zMax > this.H) fits = false;
 
              if (!fits) continue;
 
@@ -432,411 +788,13 @@ export class OptimizedCoilSolver {
 
   private packDifficultFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
       allCylinders.forEach(c => c.placed = false);
-      // Sort by Volume (Size) Descending - Biggest rocks first!
-      // But prioritize Length > Height (must be vertical)
       const sorted = [...allCylinders].sort((a,b) => {
-          // If one is tall (>200) and other is not, prioritize tall?
-          // No, 160 is the tallest here.
-          // Prioritize by Volume strictly.
           const volA = a.diameter * a.diameter * a.length;
           const volB = b.diameter * b.diameter * b.length;
           return volB - volA;
       });
       return this.packGreedyStrictOrder(sorted);
   }
-
-  private packHumanLogic(allCylinders: Cylinder[], sortMode: 'height-desc' | 'diameter-desc'): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-    allCylinders.forEach(c => c.placed = false);
-    const placed: PlacedCylinder[] = [];
-    const placedBoxes: PlacedBox[] = [];
-
-    // --- PHASE 1: VERTICALS ---
-    const verticalCandidates = [...allCylinders].sort((a, b) => {
-        if (sortMode === 'height-desc') {
-             if (Math.abs(b.length - a.length) > 1) return b.length - a.length;
-             return b.diameter - a.diameter;
-        } else {
-             if (Math.abs(b.diameter - a.diameter) > 1) return b.diameter - a.diameter;
-             return b.length - a.length;
-        }
-    });
-
-    for (const cyl of verticalCandidates) {
-      if (cyl.placed) continue;
-      if (cyl.length > this.H) continue;
-
-      // 1. Try to Stack
-      let stacked = false;
-      for (const box of placedBoxes) {
-          if (box.orientation !== 'vertical') continue;
-          const boxW = box.xMax - box.xMin;
-          if (Math.abs(boxW - cyl.diameter) > 2) continue; // Similar diameter
-
-          if (box.zMax + cyl.length <= this.H) {
-             const pos = { x: box.xMin, y: box.yMin, z: box.zMax };
-             if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-                placed.push(placedCyl);
-                cyl.placed = true;
-                placedBoxes.push(this.createBoxFromPlaced(placedCyl));
-                stacked = true;
-                break;
-             }
-          }
-      }
-
-      if (stacked) continue;
-
-      // 2. Try Floor
-      const tryPlace = (step: number) => {
-            for (let y = 0; y + cyl.diameter <= this.L; y += step) {
-                for (let x = 0; x + cyl.diameter <= this.W; x += step) {
-                    const pos = { x, y, z: 0 };
-                    if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                        return pos;
-                    }
-                }
-            }
-            return null;
-      };
-
-      const bestPos = tryPlace(1);
-      if (bestPos) {
-            const placedCyl = this.createVerticalPlacedCylinder(cyl, bestPos);
-            placed.push(placedCyl);
-            cyl.placed = true;
-            placedBoxes.push(this.createBoxFromPlaced(placedCyl));
-      }
-    }
-
-    // --- PHASE 2: HORIZONTALS (ATTIC) ---
-    const horizontalCandidates = allCylinders.filter(c => !c.placed).sort((a, b) => b.diameter - a.diameter);
-    this.runAggressivePass(horizontalCandidates, placedBoxes, placed);
-
-    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
-    return { placed, unplaced };
-  }
-
-  // --- PRIMITIVES (FIXED) ---
-
-  /**
-   * Calculates the Z height where a horizontal cylinder would settle (Drop Logic).
-   * STRICT NO-OVERLAP TOLERANCE.
-   */
-  private calculateDropZ(
-    x: number, y: number,
-    diameter: number, length: number,
-    orientation: 'horizontal-y' | 'horizontal-x',
-    placedBoxes: PlacedBox[]
-  ): number {
-      const radius = diameter / 2;
-      const cx = (orientation === 'horizontal-y') ? x + radius : x + length / 2;
-      const cy = (orientation === 'horizontal-y') ? y + length / 2 : y + radius;
-
-      let maxZ = 0; // Floor
-      const EPS = 0.0001; // Tiny tolerance for floating point comparison only
-
-      for (const box of placedBoxes) {
-          const myXMax = (orientation === 'horizontal-y') ? x + diameter : x + length;
-          const myYMax = (orientation === 'horizontal-y') ? y + length : y + diameter;
-
-          if (x >= box.xMax - EPS || myXMax <= box.xMin + EPS) continue;
-          if (y >= box.yMax - EPS || myYMax <= box.yMin + EPS) continue;
-
-          if (box.orientation === 'vertical') {
-              // Sit on flat top
-              if (box.zMax > maxZ) maxZ = box.zMax;
-          }
-          else {
-              const boxIsRotated = box.orientation === 'horizontal-x';
-              const boxR = (boxIsRotated ? (box.yMax - box.yMin) : (box.xMax - box.xMin)) / 2;
-              const boxCx = box.xMin + (boxIsRotated ? (box.xMax - box.xMin)/2 : boxR);
-              const boxCz = box.zMin + boxR;
-
-              if (orientation !== box.orientation) {
-                  // Cross stacking -> sits on peak
-                  if (box.zMax > maxZ) maxZ = box.zMax;
-              } else {
-                  // Parallel stacking -> Nesting
-                  let distPerp = 0;
-                  if (orientation === 'horizontal-y') {
-                      distPerp = Math.abs(cx - boxCx);
-                  } else {
-                      const boxCy = box.yMin + boxR;
-                      distPerp = Math.abs(cy - boxCy);
-                  }
-
-                  const sumRadii = radius + boxR;
-                  // Strict Check: No -1 tolerance!
-                  if (distPerp < sumRadii - EPS) {
-                      const dz = Math.sqrt(Math.max(0, sumRadii*sumRadii - distPerp*distPerp));
-                      const requiredCenterZ = boxCz + dz;
-                      const requiredBottomZ = requiredCenterZ - radius;
-                      if (requiredBottomZ > maxZ) {
-                          maxZ = requiredBottomZ;
-                      }
-                  }
-              }
-          }
-      }
-
-      return maxZ;
-  }
-
-  private canPlaceVertical(
-    pos: { x: number; y: number; z: number },
-    diameter: number, length: number,
-    placed: PlacedBox[]
-  ): boolean {
-    const { x, y, z } = pos;
-    const radius = diameter / 2;
-    const EPS = 0.001;
-
-    if (x < -EPS || x + diameter > this.W + EPS) return false;
-    if (y < -EPS || y + diameter > this.L + EPS) return false;
-    if (z < -EPS || z + length > this.H + EPS) return false;
-
-    const cx = x + radius;
-    const cy = y + radius;
-
-    for (const box of placed) {
-      if (z >= box.zMax - EPS || z + length <= box.zMin + EPS) continue;
-
-      const isVerticalBox = box.orientation === 'vertical';
-
-      if (isVerticalBox) {
-        const boxW = box.xMax - box.xMin;
-        const otherR = boxW / 2;
-        const otherCx = box.xMin + otherR;
-        const otherCy = box.yMin + otherR;
-
-        const dx = cx - otherCx;
-        const dy = cy - otherCy;
-        const distSq = dx * dx + dy * dy;
-        const minDist = radius + otherR - EPS; // Strict check
-
-        if (distSq < minDist * minDist) return false;
-      } else {
-        // Vertical vs Horizontal Box
-        // Check Bounding Box overlap first
-        if (x >= box.xMax - EPS || x + diameter <= box.xMin + EPS) continue;
-        if (y >= box.yMax - EPS || y + diameter <= box.yMin + EPS) continue;
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private canPlace(pos: { x: number; y: number; z: number }, diameter: number, length: number, placed: PlacedBox[]): boolean {
-    const { x, y, z } = pos;
-    const radius = diameter / 2;
-    const cx = x + radius;
-    const cz = z + radius;
-    const EPS = 0.001;
-
-    if (x < -EPS || x + diameter > this.W + EPS) return false;
-    if (y < -EPS || y + length > this.L + EPS) return false;
-    if (z < -EPS || z + diameter > this.H + EPS) return false;
-
-    for (const box of placed) {
-      if (y >= box.yMax - EPS || y + length <= box.yMin + EPS) continue;
-
-      if (box.orientation === 'vertical') {
-         if (x >= box.xMax - EPS || x + diameter <= box.xMin + EPS) continue;
-         if (z >= box.zMax - EPS) continue;
-         if (z + diameter <= box.zMin + EPS) continue;
-         return false;
-      } else if (box.orientation === 'horizontal-x') {
-         if (x >= box.xMax - EPS || x + diameter <= box.xMin + EPS) continue;
-         if (z >= box.zMax - EPS || z + diameter <= box.zMin + EPS) continue;
-         return false;
-      } else {
-         const otherR = (box.xMax - box.xMin) / 2;
-         const otherCx = box.xMin + otherR;
-         const otherCz = box.zMin + otherR;
-         const distSq = (cx - otherCx)**2 + (cz - otherCz)**2;
-         const minDist = radius + otherR - EPS; // Strict
-         if (distSq < minDist**2) return false;
-      }
-    }
-    return true;
-  }
-
-  private canPlaceRotated(pos: { x: number; y: number; z: number }, diameter: number, length: number, placed: PlacedBox[]): boolean {
-    const { x, y, z } = pos;
-    const radius = diameter / 2;
-    const cy = y + radius;
-    const cz = z + radius;
-    const EPS = 0.001;
-
-    if (x < -EPS || x + length > this.W + EPS) return false;
-    if (y < -EPS || y + diameter > this.L + EPS) return false;
-    if (z < -EPS || z + diameter > this.H + EPS) return false;
-
-    for (const box of placed) {
-      if (x >= box.xMax - EPS || x + length <= box.xMin + EPS) continue;
-
-      if (box.orientation === 'vertical') {
-         if (y >= box.yMax - EPS || y + diameter <= box.yMin + EPS) continue;
-         if (z >= box.zMax - EPS || z + diameter <= box.zMin + EPS) continue;
-         return false;
-      } else if (box.orientation === 'horizontal-y') {
-         if (y >= box.yMax - EPS || y + diameter <= box.yMin + EPS) continue;
-         if (z >= box.zMax - EPS || z + diameter <= box.zMin + EPS) continue;
-         return false;
-      } else {
-         const otherR = (box.yMax - box.yMin) / 2;
-         const otherCy = box.yMin + otherR;
-         const otherCz = box.zMin + otherR;
-         const distSq = (cy - otherCy)**2 + (cz - otherCz)**2;
-         const minDist = radius + otherR - EPS; // Strict
-         if (distSq < minDist**2) return false;
-      }
-    }
-    return true;
-  }
-
-  // REWRITTEN AGGRESSIVE PLACEMENT (Candidate Points - Fast & Precise)
-  private tryAggressivePlacement(
-    cyl: Cylinder,
-    placedBoxes: PlacedBox[]
-  ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'vertical' | 'horizontal-x' } | null {
-    const { diameter, length } = cyl;
-
-    // Generate Candidate Points (Snap to existing edges)
-    // This is much faster than Grid Scan and precise for "Perfect Fits".
-
-    const xCandidates = new Set<number>();
-    xCandidates.add(0);
-    const yCandidates = new Set<number>();
-    yCandidates.add(0);
-
-    for(const b of placedBoxes) {
-        if (b.xMax <= this.W) xCandidates.add(b.xMax);
-        if (b.yMax <= this.L) yCandidates.add(b.yMax);
-    }
-
-    const sortedX = Array.from(xCandidates).sort((a,b) => a-b);
-    const sortedY = Array.from(yCandidates).sort((a,b) => a-b);
-
-    // --- 1. Floor Priority (Vertical & Horizontal) ---
-    // Check floor spots first (z=0)
-
-    // 1a. Vertical Floor
-    if (length <= this.H) {
-         for (const y of sortedY) {
-             if (y + diameter > this.L) break;
-             for(const x of sortedX) {
-                 if (x + diameter > this.W) break;
-
-                 const pos = { x, y, z: 0 };
-                 if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
-                      return { pos, orientation: 'vertical' };
-                 }
-             }
-         }
-    }
-
-    // 1b. Horizontal-Y Floor
-    for (const y of sortedY) {
-        if (y + length > this.L) break;
-        for (const x of sortedX) {
-             if (x + diameter > this.W) break;
-             const pos = { x, y, z: 0 };
-             if (this.canPlace(pos, diameter, length, placedBoxes)) {
-                  return { pos, orientation: 'horizontal-y' };
-             }
-        }
-    }
-
-    // 1c. Horizontal-X Floor
-    if (length <= this.W) {
-        for (const y of sortedY) {
-            if (y + diameter > this.L) break;
-            for (const x of sortedX) {
-                if (x + length > this.W) break;
-                const pos = { x, y, z: 0 };
-                if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
-                    return { pos, orientation: 'horizontal-x' };
-                }
-            }
-        }
-    }
-
-    // --- 2. Stack / Attic (Gravity) ---
-    // Scan candidates again, but calculate DropZ.
-
-    let bestSol: { pos: { x: number, y: number, z: number }, orientation: any, z: number } | null = null;
-
-    // We can use a coarse grid for DropZ to find "nesting" spots that don't align with edges?
-    // Nesting often happens at (x1 + x2)/2.
-    // But let's try Candidate Points first. If we only snap to edges, we maximize "Shelf" usage.
-    // For "Honeycomb", we might miss the optimal valley.
-    // BUT, finding *some* spot is better than timeout.
-    // Let's stick to sortedX/sortedY for now.
-
-    // 2a. Horizontal-Y Stack
-    for (const y of sortedY) {
-        if (y + length > this.L) break;
-        for (const x of sortedX) {
-            if (x + diameter > this.W) break;
-
-            const z = this.calculateDropZ(x, y, diameter, length, 'horizontal-y', placedBoxes);
-            if (z > 0 && z + diameter <= this.H) {
-                const pos = { x, y, z };
-                if (this.canPlace(pos, diameter, length, placedBoxes)) {
-                    if (!bestSol || z < bestSol.z) {
-                        bestSol = { pos, orientation: 'horizontal-y', z };
-                    }
-                }
-            }
-        }
-    }
-
-    // 2b. Horizontal-X Stack
-    if (length <= this.W) {
-        for (const y of sortedY) {
-            if (y + diameter > this.L) break;
-            for (const x of sortedX) {
-                if (x + length > this.W) break;
-
-                const z = this.calculateDropZ(x, y, diameter, length, 'horizontal-x', placedBoxes);
-                if (z > 0 && z + diameter <= this.H) {
-                    const pos = { x, y, z };
-                    if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
-                        if (!bestSol || z < bestSol.z) {
-                            bestSol = { pos, orientation: 'horizontal-x', z };
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2c. Vertical Stack
-    if (length <= this.H) {
-         for(const box of placedBoxes) {
-             if(box.orientation === 'vertical' && box.zMax + length <= this.H) {
-                 const boxW = box.xMax - box.xMin;
-                 if (Math.abs(boxW - diameter) < 2) {
-                     const pos = { x: box.xMin, y: box.yMin, z: box.zMax };
-                     if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
-                          if (!bestSol || pos.z < bestSol.z) {
-                              bestSol = { pos, orientation: 'vertical', z: pos.z };
-                          }
-                     }
-                 }
-             }
-         }
-    }
-
-    if (bestSol) {
-        return { pos: bestSol.pos, orientation: bestSol.orientation };
-    }
-    return null;
-  }
-
-  // Strategies Implementation (Shortened for brevity as they call helpers)
 
   private packVerticalPriority(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
      allCylinders.forEach(c => c.placed = false);
@@ -851,24 +809,7 @@ export class OptimizedCoilSolver {
          return b.diameter - a.diameter;
      });
 
-     for (const cyl of canBeVertical) {
-         if (cyl.placed) continue;
-          for (let y = 0; y + cyl.diameter <= this.L; y += 1) {
-            for (let x = 0; x + cyl.diameter <= this.W; x += 1) {
-                const pos = {x,y,z:0};
-                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                    const p = this.createVerticalPlacedCylinder(cyl, pos);
-                    placed.push(p);
-                    placedBoxes.push(this.createBoxFromPlaced(p));
-                    cyl.placed = true;
-                    y = this.L; x = this.W;
-                }
-            }
-          }
-     }
-
-     this.runAggressivePass(allCylinders, placedBoxes, placed);
-     return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
+     return this.packGreedyStrictOrder(canBeVertical);
   }
 
   private packMixedOrientations(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
@@ -877,19 +818,10 @@ export class OptimizedCoilSolver {
       return this.packGreedyStrictOrder(sorted);
   }
 
-  private packLargestFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-      allCylinders.forEach(c => c.placed = false);
-      const sorted = [...allCylinders].sort((a,b) => b.diameter - a.diameter);
-      return this.packGreedyStrictOrder(sorted);
-  }
-
-  private packSmallestFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
-      allCylinders.forEach(c => c.placed = false);
-      const sorted = [...allCylinders].sort((a,b) => a.diameter - b.diameter);
-      return this.packGreedyStrictOrder(sorted);
-  }
-
-  private packByPerfectColumns(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+  private packByPerfectColumns(
+      allCylinders: Cylinder[],
+      mode: 'vertical' | 'horizontal' = 'vertical'
+  ): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
      allCylinders.forEach(c => c.placed = false);
      const placed: PlacedCylinder[] = [];
      const placedBoxes: PlacedBox[] = [];
@@ -919,36 +851,85 @@ export class OptimizedCoilSolver {
          if (cols === 0) continue;
 
          cylinders.sort((a,b) => b.length - a.length);
-         let groupMaxY = currentY;
-         let colIndex = 0;
-         let currentRowY = currentY;
+         let rowY = currentY;
+         let rowMaxYStep = 0;
 
-         for(const cyl of cylinders) {
-             if (cyl.placed) continue;
-             if (cyl.length > this.H) continue;
+         const colZ = new Array(cols).fill(0);
+         const colX = Array.from({length: cols}, (_, i) => i * diameter);
 
-             const x = colIndex * diameter;
-             const y = currentRowY;
-
-             if (y + diameter > this.L) break;
-
-             const pos = { x, y, z: 0 };
-             if (this.canPlaceVertical(pos, diameter, cyl.length, placedBoxes)) {
-                 const p = this.createVerticalPlacedCylinder(cyl, pos);
-                 placed.push(p);
-                 placedBoxes.push(this.createBoxFromPlaced(p));
-                 cyl.placed = true;
-
-                 groupMaxY = Math.max(groupMaxY, y + diameter);
+         let cylIdx = 0;
+         while(cylIdx < cylinders.length) {
+             const cyl = cylinders[cylIdx];
+             if (cyl.placed) {
+                 cylIdx++;
+                 continue;
              }
 
-             colIndex++;
-             if (colIndex >= cols) {
-                 colIndex = 0;
-                 currentRowY += diameter;
+             let placedInRow = false;
+
+             for(let cIdx = 0; cIdx < cols; cIdx++) {
+                 const x = colX[cIdx];
+                 const z = colZ[cIdx];
+
+                 let itemH = 0;
+                 let itemYDim = 0;
+
+                 if (mode === 'vertical') {
+                     itemH = cyl.length;
+                     itemYDim = diameter;
+                 } else {
+                     itemH = diameter;
+                     itemYDim = cyl.length;
+                 }
+
+                 if (z + itemH > this.H) continue;
+                 if (x + diameter > this.W) continue;
+                 if (rowY + itemYDim > this.L) break;
+
+                 const pos = { x, y: rowY, z };
+                 let success = false;
+                 let p: PlacedCylinder;
+
+                 if (mode === 'vertical') {
+                     if (this.canPlaceVertical(pos, diameter, cyl.length, placedBoxes)) {
+                         p = this.createVerticalPlacedCylinder(cyl, pos);
+                         success = true;
+                     }
+                 } else {
+                     if (this.canPlace(pos, diameter, cyl.length, placedBoxes)) {
+                         p = this.createPlacedCylinder(cyl, pos);
+                         success = true;
+                     }
+                 }
+
+                 if (success) {
+                     placed.push(p!);
+                     placedBoxes.push(this.createBoxFromPlaced(p!));
+                     cyl.placed = true;
+                     colZ[cIdx] += itemH;
+                     rowMaxYStep = Math.max(rowMaxYStep, itemYDim);
+                     placedInRow = true;
+                     break;
+                 }
+             }
+
+             if (placedInRow) {
+                 cylIdx++;
+             } else {
+                 if (rowMaxYStep === 0) {
+                     cylIdx++;
+                     continue;
+                 }
+
+                 rowY += rowMaxYStep;
+                 if (rowY >= this.L) break;
+
+                 rowMaxYStep = 0;
+                 colZ.fill(0);
+
              }
          }
-         currentY = groupMaxY;
+         currentY = rowY + rowMaxYStep;
      }
 
      this.runAggressivePass(allCylinders, placedBoxes, placed);
@@ -1009,52 +990,303 @@ export class OptimizedCoilSolver {
      return { placed, unplaced: allCylinders.filter(c => !c.placed).map(c => c.item) };
   }
 
-  // --- FACTORIES (unchanged logic) ---
-  private createVerticalPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
-    const radius = cyl.diameter / 2;
-    return {
-      item: cyl.item, uniqueId: `cyl_${cyl.index}_v`,
-      position: { x: pos.x, y: pos.y, z: pos.z },
-      center: { x: pos.x + radius, y: pos.y + radius, z: pos.z + cyl.length / 2 },
-      radius, length: cyl.length, orientation: 'vertical',
-      rotation: ORIENTATION_ROTATIONS['vertical'], layerId: 0, supportedBy: [],
-    };
+  // --- PRIMITIVES ---
+
+  private calculateDropZ(
+    x: number, y: number,
+    diameter: number, length: number,
+    orientation: 'horizontal-y' | 'horizontal-x',
+    placedBoxes: PlacedBox[]
+  ): number {
+      const radius = diameter / 2;
+      const cx = (orientation === 'horizontal-y') ? x + radius : x + length / 2;
+      const cy = (orientation === 'horizontal-y') ? y + length / 2 : y + radius;
+
+      let maxZ = 0; // Floor
+      const EPS = 0.0001;
+
+      for (const box of placedBoxes) {
+          const myXMax = (orientation === 'horizontal-y') ? x + diameter : x + length;
+          const myYMax = (orientation === 'horizontal-y') ? y + length : y + diameter;
+
+          if (x >= box.xMax - EPS || myXMax <= box.xMin + EPS) continue;
+          if (y >= box.yMax - EPS || myYMax <= box.yMin + EPS) continue;
+
+          if (box.orientation === 'vertical') {
+              if (box.zMax > maxZ) maxZ = box.zMax;
+          }
+          else {
+              const boxIsRotated = box.orientation === 'horizontal-x';
+              const boxR = (boxIsRotated ? (box.yMax - box.yMin) : (box.xMax - box.xMin)) / 2;
+              const boxCx = box.xMin + (boxIsRotated ? (box.xMax - box.xMin)/2 : boxR);
+              const boxCz = box.zMin + boxR;
+
+              if (orientation !== box.orientation) {
+                  if (box.zMax > maxZ) maxZ = box.zMax;
+              } else {
+                  let distPerp = 0;
+                  if (orientation === 'horizontal-y') {
+                      distPerp = Math.abs(cx - boxCx);
+                  } else {
+                      const boxCy = box.yMin + boxR;
+                      distPerp = Math.abs(cy - boxCy);
+                  }
+
+                  const sumRadii = radius + boxR;
+                  if (distPerp < sumRadii - EPS) {
+                      const dz = Math.sqrt(Math.max(0, sumRadii*sumRadii - distPerp*distPerp));
+                      const requiredCenterZ = boxCz + dz;
+                      const requiredBottomZ = requiredCenterZ - radius;
+                      if (requiredBottomZ > maxZ) {
+                          maxZ = requiredBottomZ;
+                      }
+                  }
+              }
+          }
+      }
+      return maxZ;
   }
 
-  private createPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
-    const radius = cyl.diameter / 2;
-    return {
-      item: cyl.item, uniqueId: `cyl_${cyl.index}_h`,
-      position: { x: pos.x, y: pos.y, z: pos.z },
-      center: { x: pos.x + radius, y: pos.y + cyl.length / 2, z: pos.z + radius },
-      radius, length: cyl.length, orientation: 'horizontal-y',
-      rotation: ORIENTATION_ROTATIONS['horizontal-y'], layerId: 0, supportedBy: [],
-    };
+  private canPlaceVertical(
+    pos: { x: number; y: number; z: number },
+    diameter: number, length: number,
+    placed: PlacedBox[]
+  ): boolean {
+    const { x, y, z } = pos;
+    const radius = diameter / 2;
+    const EPS = 0.001;
+
+    // Strict boundary checks
+    if (x < -EPS || x + diameter > this.W) return false;
+    if (y < -EPS || y + diameter > this.L) return false;
+    if (z < -EPS || z + length > this.H) return false;
+
+    const cx = x + radius;
+    const cy = y + radius;
+
+    for (const box of placed) {
+      if (z >= box.zMax - EPS || z + length <= box.zMin + EPS) continue;
+
+      const isVerticalBox = box.orientation === 'vertical';
+
+      if (isVerticalBox) {
+        const boxW = box.xMax - box.xMin;
+        const otherR = boxW / 2;
+        const otherCx = box.xMin + otherR;
+        const otherCy = box.yMin + otherR;
+
+        const dx = cx - otherCx;
+        const dy = cy - otherCy;
+        const distSq = dx * dx + dy * dy;
+        const minDist = radius + otherR - EPS;
+
+        if (distSq < minDist * minDist) return false;
+      } else {
+        if (x >= box.xMax - EPS || x + diameter <= box.xMin + EPS) continue;
+        if (y >= box.yMax - EPS || y + diameter <= box.yMin + EPS) continue;
+        return false;
+      }
+    }
+    return true;
   }
 
-  private createRotatedPlacedCylinder(cyl: Cylinder, pos: { x: number; y: number; z: number }): PlacedCylinder {
-    const radius = cyl.diameter / 2;
-    return {
-      item: cyl.item, uniqueId: `cyl_${cyl.index}_r`,
-      position: { x: pos.x, y: pos.y, z: pos.z },
-      center: { x: pos.x + cyl.length / 2, y: pos.y + radius, z: pos.z + radius },
-      radius, length: cyl.length, orientation: 'horizontal-x',
-      rotation: ORIENTATION_ROTATIONS['horizontal-x'], layerId: 0, supportedBy: [],
-    };
+  private canPlace(pos: { x: number; y: number; z: number }, diameter: number, length: number, placed: PlacedBox[]): boolean {
+    const { x, y, z } = pos;
+    const radius = diameter / 2;
+    const cx = x + radius;
+    const cz = z + radius;
+    const EPS = 0.001;
+
+    if (x < -EPS || x + diameter > this.W) return false;
+    if (y < -EPS || y + length > this.L) return false;
+    if (z < -EPS || z + diameter > this.H) return false;
+
+    for (const box of placed) {
+      if (y >= box.yMax - EPS || y + length <= box.yMin + EPS) continue;
+
+      if (box.orientation === 'vertical') {
+         if (x >= box.xMax - EPS || x + diameter <= box.xMin + EPS) continue;
+         if (z >= box.zMax - EPS) continue;
+         if (z + diameter <= box.zMin + EPS) continue;
+         return false;
+      } else if (box.orientation === 'horizontal-x') {
+         if (x >= box.xMax - EPS || x + diameter <= box.xMin + EPS) continue;
+         if (z >= box.zMax - EPS || z + diameter <= box.zMin + EPS) continue;
+         return false;
+      } else {
+         const otherR = (box.xMax - box.xMin) / 2;
+         const otherCx = box.xMin + otherR;
+         const otherCz = box.zMin + otherR;
+         const distSq = (cx - otherCx)**2 + (cz - otherCz)**2;
+         const minDist = radius + otherR - EPS;
+         if (distSq < minDist**2) return false;
+      }
+    }
+    return true;
   }
 
-  private calcStats(placed: PlacedCylinder[], failed: number): PackingStatistics {
-      let vol = 0;
-      placed.forEach(p => vol += Math.PI * p.radius**2 * p.length);
-      return {
-          totalVolumePlaced: vol,
-          containerVolumeUsed: this.W*this.L*this.H,
-          volumeEfficiency: vol / (this.W*this.L*this.H),
-          layerCount: 1, itemsPlaced: placed.length, itemsFailed: failed
-      };
+  private canPlaceRotated(pos: { x: number; y: number; z: number }, diameter: number, length: number, placed: PlacedBox[]): boolean {
+    const { x, y, z } = pos;
+    const radius = diameter / 2;
+    const cy = y + radius;
+    const cz = z + radius;
+    const EPS = 0.001;
+
+    if (x < -EPS || x + length > this.W) return false;
+    if (y < -EPS || y + diameter > this.L) return false;
+    if (z < -EPS || z + diameter > this.H) return false;
+
+    for (const box of placed) {
+      if (x >= box.xMax - EPS || x + length <= box.xMin + EPS) continue;
+
+      if (box.orientation === 'vertical') {
+         if (y >= box.yMax - EPS || y + diameter <= box.yMin + EPS) continue;
+         if (z >= box.zMax - EPS || z + diameter <= box.zMin + EPS) continue;
+         return false;
+      } else if (box.orientation === 'horizontal-y') {
+         if (y >= box.yMax - EPS || y + diameter <= box.yMin + EPS) continue;
+         if (z >= box.zMax - EPS || z + diameter <= box.zMin + EPS) continue;
+         return false;
+      } else {
+         const otherR = (box.yMax - box.yMin) / 2;
+         const otherCy = box.yMin + otherR;
+         const otherCz = box.zMin + otherR;
+         const distSq = (cy - otherCy)**2 + (cz - otherCz)**2;
+         const minDist = radius + otherR - EPS;
+         if (distSq < minDist**2) return false;
+      }
+    }
+    return true;
   }
 
-  private emptyResult(): CoilSolverResult {
-    return { placedCylinders: [], unplacedItems: [], statistics: { totalVolumePlaced: 0, containerVolumeUsed: 0, volumeEfficiency: 0, layerCount: 0, itemsPlaced: 0, itemsFailed: 0 } };
+  private tryAggressivePlacement(
+    cyl: Cylinder,
+    placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'vertical' | 'horizontal-x' } | null {
+      // Default: Vertical First
+      const v = this.findVerticalCandidate(cyl, placedBoxes);
+      if (v) return v;
+      return this.findHorizontalCandidate(cyl, placedBoxes);
+  }
+
+  // --- PRIMITIVE FINDERS ---
+
+  private findVerticalCandidate(
+      cyl: Cylinder,
+      placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'vertical' } | null {
+      const { diameter, length } = cyl;
+      if (length > this.H) return null;
+
+      // Candidate Points
+      const xCandidates = new Set<number>(); xCandidates.add(0);
+      const yCandidates = new Set<number>(); yCandidates.add(0);
+      const zCandidates = new Set<number>(); zCandidates.add(0);
+
+      for(const b of placedBoxes) {
+          if (b.xMax <= this.W) xCandidates.add(b.xMax);
+          if (b.yMax <= this.L) yCandidates.add(b.yMax);
+          if (b.zMax + length <= this.H) zCandidates.add(b.zMax);
+      }
+
+      const sortedX = Array.from(xCandidates).sort((a,b) => a-b);
+      const sortedY = Array.from(yCandidates).sort((a,b) => a-b);
+      const sortedZ = Array.from(zCandidates).sort((a,b) => a-b);
+
+      for(const z of sortedZ) {
+         for (const y of sortedY) {
+             if (y + diameter > this.L) break;
+             for(const x of sortedX) {
+                 if (x + diameter > this.W) break;
+
+                 const pos = { x, y, z };
+                 if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
+                      return { pos, orientation: 'vertical' };
+                 }
+             }
+         }
+      }
+      return null;
+  }
+
+  private findHorizontalCandidate(
+      cyl: Cylinder,
+      placedBoxes: PlacedBox[]
+  ): { pos: { x: number; y: number; z: number }; orientation: 'horizontal-y' | 'horizontal-x' } | null {
+      const { diameter, length } = cyl;
+
+      const xCandidates = new Set<number>(); xCandidates.add(0);
+      const yCandidates = new Set<number>(); yCandidates.add(0);
+      for(const b of placedBoxes) {
+          if (b.xMax <= this.W) xCandidates.add(b.xMax);
+          if (b.yMax <= this.L) yCandidates.add(b.yMax);
+      }
+      const sortedX = Array.from(xCandidates).sort((a,b) => a-b);
+      const sortedY = Array.from(yCandidates).sort((a,b) => a-b);
+
+      let bestSol: { pos: { x: number, y: number, z: number }, orientation: 'horizontal-y' | 'horizontal-x', z: number } | null = null;
+
+      // 1. Horizontal-Y
+      for (const y of sortedY) {
+          if (y + length > this.L) break;
+          for (const x of sortedX) {
+              if (x + diameter > this.W) break;
+
+              // Floor First (Optimization)
+              const posFloor = { x, y, z: 0 };
+              if (this.canPlace(posFloor, diameter, length, placedBoxes)) {
+                  if (!bestSol || 0 < bestSol.z) {
+                      bestSol = { pos: posFloor, orientation: 'horizontal-y', z: 0 };
+                      // Floor found, but we must check Horizontal-X too?
+                      // Usually Y is better aligned.
+                  }
+              }
+
+              // Stack
+              const z = this.calculateDropZ(x, y, diameter, length, 'horizontal-y', placedBoxes);
+              if (z > 0 && z + diameter <= this.H) {
+                  const pos = { x, y, z };
+                  if (this.canPlace(pos, diameter, length, placedBoxes)) {
+                      if (!bestSol || z < bestSol.z) {
+                          bestSol = { pos, orientation: 'horizontal-y', z };
+                      }
+                  }
+              }
+          }
+      }
+
+      // 2. Horizontal-X
+      if (length <= this.W) {
+          for (const y of sortedY) {
+              if (y + diameter > this.L) break;
+              for (const x of sortedX) {
+                  if (x + length > this.W) break;
+
+                  // Floor
+                  const posFloor = { x, y, z: 0 };
+                  if (this.canPlaceRotated(posFloor, diameter, length, placedBoxes)) {
+                      if (!bestSol || 0 < bestSol.z) {
+                          bestSol = { pos: posFloor, orientation: 'horizontal-x', z: 0 };
+                      }
+                  }
+
+                  // Stack
+                  const z = this.calculateDropZ(x, y, diameter, length, 'horizontal-x', placedBoxes);
+                  if (z > 0 && z + diameter <= this.H) {
+                      const pos = { x, y, z };
+                      if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
+                          if (!bestSol || z < bestSol.z) {
+                              bestSol = { pos, orientation: 'horizontal-x', z };
+                          }
+                      }
+                  }
+              }
+          }
+      }
+
+      if (bestSol) {
+          return { pos: bestSol.pos, orientation: bestSol.orientation };
+      }
+      return null;
   }
 }
