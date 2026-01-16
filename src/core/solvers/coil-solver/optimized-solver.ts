@@ -213,6 +213,67 @@ export class OptimizedCoilSolver {
       bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
     }
 
+    // HONEYCOMB VERTICAL PASS: Try honeycomb positions for remaining cylinders
+    const honeycombUnplaced = all.filter(c => !c.placed && c.length <= this.H);
+    if (honeycombUnplaced.length > 0) {
+      console.log(`Honeycomb vertical pass for ${honeycombUnplaced.length} unplaced cylinders`);
+
+      for (const cyl of honeycombUnplaced) {
+        if (cyl.placed) continue;
+
+        const d = cyl.diameter;
+        const HEX_Y_SPACING = d * 0.866;
+        let found = false;
+
+        // Try honeycomb offset positions
+        for (let row = 0; !found; row++) {
+          const baseY = row * HEX_Y_SPACING;
+          if (baseY + d > this.L) break;
+
+          const xOffset = (row % 2 === 1) ? d / 2 : 0;
+
+          for (let gx = xOffset; gx + d <= this.W && !found; gx += d) {
+            const pos = { x: gx, y: baseY, z: 0 };
+            if (this.canPlaceVertical(pos, d, cyl.length, bestResult!.placedBoxes)) {
+              console.log(`  ${cyl.item.name} D${d}: HONEYCOMB VERTICAL at (${gx.toFixed(1)}, ${baseY.toFixed(1)})`);
+              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+              bestResult!.placed.push(placedCyl);
+              bestResult!.placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + d,
+                yMin: pos.y, yMax: pos.y + d,
+                zMin: 0, zMax: cyl.length,
+              });
+              cyl.placed = true;
+              found = true;
+            }
+          }
+        }
+
+        // Also try fine-grid search if honeycomb didn't work
+        if (!found) {
+          for (let gy = 0; gy + d <= this.L && !found; gy += 2) {
+            for (let gx = 0; gx + d <= this.W && !found; gx += 2) {
+              const pos = { x: gx, y: gy, z: 0 };
+              if (this.canPlaceVertical(pos, d, cyl.length, bestResult!.placedBoxes)) {
+                console.log(`  ${cyl.item.name} D${d}: FINE-GRID VERTICAL at (${gx}, ${gy})`);
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                bestResult!.placed.push(placedCyl);
+                bestResult!.placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + d,
+                  yMin: pos.y, yMax: pos.y + d,
+                  zMin: 0, zMax: cyl.length,
+                });
+                cyl.placed = true;
+                found = true;
+              }
+            }
+          }
+        }
+      }
+
+      bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+
     // SUPER-FINAL: If still unplaced, try aggressive placement with step=1 on all Z levels
     const superFinalUnplaced = all.filter(c => !c.placed);
     if (superFinalUnplaced.length > 0) {
@@ -1543,7 +1604,7 @@ export class OptimizedCoilSolver {
       const maxPerCol = Math.floor(this.L / d);
       console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxPerCol} grid`);
 
-      // Pack in grid pattern
+      // Pack in grid pattern first
       for (const cyl of group) {
         if (cyl.placed) continue;
 
@@ -1562,6 +1623,66 @@ export class OptimizedCoilSolver {
                 zMin: 0, zMax: cyl.length,
               });
               found = true;
+            }
+          }
+        }
+      }
+
+      // HONEYCOMB PASS: Try offset positions for remaining cylinders
+      // Honeycomb rows are offset by D/2 in X and use D*0.866 spacing in Y
+      const HEX_Y_SPACING = d * 0.866;
+      const unplacedInGroup = group.filter(c => !c.placed);
+
+      if (unplacedInGroup.length > 0) {
+        console.log(`    Trying honeycomb placement for ${unplacedInGroup.length} remaining D=${d} cylinders`);
+
+        for (const cyl of unplacedInGroup) {
+          if (cyl.placed) continue;
+
+          let found = false;
+
+          // Try honeycomb offset positions (odd rows offset by D/2)
+          for (let row = 0; !found; row++) {
+            const baseY = row * HEX_Y_SPACING;
+            if (baseY + cyl.diameter > this.L) break;
+
+            const xOffset = (row % 2 === 1) ? cyl.diameter / 2 : 0;
+
+            for (let gx = xOffset; gx + cyl.diameter <= this.W && !found; gx += cyl.diameter) {
+              const pos = { x: gx, y: baseY, z: 0 };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + cyl.diameter,
+                  yMin: pos.y, yMax: pos.y + cyl.diameter,
+                  zMin: 0, zMax: cyl.length,
+                });
+                found = true;
+                console.log(`      Placed D=${d} at honeycomb (${gx.toFixed(1)}, ${baseY.toFixed(1)})`);
+              }
+            }
+          }
+
+          // If honeycomb didn't work, try fine-grid search with step=5
+          if (!found) {
+            for (let gy = 0; gy + cyl.diameter <= this.L && !found; gy += 5) {
+              for (let gx = 0; gx + cyl.diameter <= this.W && !found; gx += 5) {
+                const pos = { x: gx, y: gy, z: 0 };
+                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.diameter,
+                    zMin: 0, zMax: cyl.length,
+                  });
+                  found = true;
+                  console.log(`      Placed D=${d} at fine-grid (${gx}, ${gy})`);
+                }
+              }
             }
           }
         }
@@ -5084,7 +5205,31 @@ export class OptimizedCoilSolver {
       }
     }
 
-    // Strategy 4: Fine grid search
+    // Strategy 4: Honeycomb pattern search
+    console.log(`      Trying honeycomb search...`);
+    const HEX_Y_SPACING = diameter * 0.866;
+    for (const z of [0, ...sortedZLevels]) {
+      if (z + length > this.H) continue;
+
+      for (let row = 0; ; row++) {
+        const y = row * HEX_Y_SPACING;
+        if (y + diameter > this.L) break;
+
+        const xOffset = (row % 2 === 1) ? diameter / 2 : 0;
+
+        for (let x = xOffset; x + diameter <= this.W; x += diameter) {
+          const pos = { x, y, z };
+          if (this.canPlaceVertical(pos, diameter, length, placed)) {
+            if (z === 0 || this.hasVerticalSupport(pos, diameter, placed)) {
+              console.log(`      Found honeycomb position at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z})`);
+              return pos;
+            }
+          }
+        }
+      }
+    }
+
+    // Strategy 5: Fine grid search
     console.log(`      Trying fine grid search...`);
     for (const z of [0, ...sortedZLevels]) {
       if (z + length > this.H) continue;
