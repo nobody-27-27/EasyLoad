@@ -1,14 +1,14 @@
 // src/core/solvers/coil-solver/optimized-solver.ts
 // Cross-section packing solver - fills XZ plane completely at each Y slice
 
-import type { Container, CargoItem } from '../../common/types';
+import type { Container, CargoItem } from '../../common/types.ts';
 import type {
   PlacedCylinder,
   CoilSolverConfig,
   CoilSolverResult,
   PackingStatistics,
-} from './types';
-import { ORIENTATION_ROTATIONS } from './types';
+} from './types.ts';
+import { ORIENTATION_ROTATIONS } from './types.ts';
 
 interface Cylinder {
   item: CargoItem;
@@ -1532,35 +1532,72 @@ export class OptimizedCoilSolver {
     });
 
     // Place verticals on floor first - pack by diameter groups
-    const vertByDiameter = this.groupByDiameter(canBeVertical, 10);
+    const vertByDiameter = this.groupByDiameter(canBeVertical, 0.5);
 
     for (const group of vertByDiameter) {
-      const d = group[0]?.diameter || 80;
-      const maxPerRow = Math.floor(this.W / d);
-      const maxPerCol = Math.floor(this.L / d);
-      console.log(`  Vertical group D=${d}: ${group.length} cylinders, ${maxPerRow}x${maxPerCol} grid`);
+      const d = Math.max(...group.map(c => c.diameter));
+
+      // Determine efficient grid (Hexagonal vs Rectangular)
+      const rectCols = Math.floor(this.W / d);
+      const hexColsOffset = Math.floor((this.W - d/2) / d);
+      const useHex = hexColsOffset === rectCols;
+
+      const yStep = useHex ? d * 0.866 : d;
+
+      console.log(`  Vertical group D=${d}: ${group.length} cylinders. Using ${useHex ? 'HEX' : 'RECT'} grid.`);
+
+      // Deferral Logic: Check for partial row at the end
+      // For Hex, capacity per row can vary, but generally 'rectCols'.
+      // If we have a very small remainder (e.g. 1 or 2 items in a 3-wide row), defer it.
+      let packLimit = group.length;
+      if (rectCols > 0) {
+          const remainder = group.length % rectCols;
+          if (remainder > 0 && remainder < rectCols) {
+              // Always defer partials to save floor Y.
+              console.log(`    Deferring ${remainder} items of D${d} to save floor row.`);
+              packLimit = group.length - remainder;
+          }
+      }
+
+      let packedInGroup = 0;
 
       // Pack in grid pattern
       for (const cyl of group) {
         if (cyl.placed) continue;
 
-        // Find next grid position
+        if (packedInGroup >= packLimit) {
+            // Defer this cylinder
+            continue;
+        }
+
+        // Find next grid position using calculated grid
         let found = false;
-        for (let gy = 0; gy + cyl.diameter <= this.L && !found; gy += cyl.diameter) {
-          for (let gx = 0; gx + cyl.diameter <= this.W && !found; gx += cyl.diameter) {
-            const pos = { x: gx, y: gy, z: 0 };
-            if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
-              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
-              placed.push(placedCyl);
-              cyl.placed = true;
-              placedBoxes.push({
-                xMin: pos.x, xMax: pos.x + cyl.diameter,
-                yMin: pos.y, yMax: pos.y + cyl.diameter,
-                zMin: 0, zMax: cyl.length,
-              });
-              found = true;
+
+        // Scan rows
+        const maxRows = Math.ceil(this.L / (d * 0.5));
+
+        for (let row = 0; row < maxRows && !found; row++) {
+            const gy = row * yStep;
+            if (gy + d > this.L) break;
+
+            const isOffsetRow = useHex && (row % 2 === 1);
+            const xStart = isOffsetRow ? d/2 : 0;
+
+            for (let gx = xStart; gx + d <= this.W && !found; gx += d) {
+                const pos = { x: gx, y: gy, z: 0 };
+                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  packedInGroup++;
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.diameter,
+                    zMin: 0, zMax: cyl.length,
+                  });
+                  found = true;
+                }
             }
-          }
         }
       }
     }
@@ -1609,7 +1646,9 @@ export class OptimizedCoilSolver {
     }
 
     // Place remaining unplaced verticals as horizontals
-    for (const cyl of canBeVertical.filter(c => !c.placed)) {
+    // Sort smallest first to fit in gaps
+    const unplacedVerts = canBeVertical.filter(c => !c.placed).sort((a, b) => a.diameter - b.diameter);
+    for (const cyl of unplacedVerts) {
       const pos = this.findBestPosition(cyl, placedBoxes);
       if (pos) {
         const placedCyl = this.createPlacedCylinder(cyl, pos);
