@@ -414,37 +414,77 @@ export class OptimizedCoilSolver {
       console.log(`    Placed D${cyl.diameter} L${cyl.length.toFixed(1)} at (${pos.x}, ${pos.y}, ${pos.z}) ${orientation}`);
     };
 
-    // Sort ALL cylinders by length DESCENDING - longest first gets Y space
-    const allSorted = [...allCylinders].sort((a, b) => b.length - a.length);
+    // Separate by diameter
+    const smallDiameter = allCylinders.filter(c => c.diameter < 85); // D=77, D=78 - better vertical
+    const largeDiameter = allCylinders.filter(c => c.diameter >= 85); // D=85, D=90, D=97 - horizontal
 
-    console.log(`  Placing by length descending. Longest: ${allSorted[0]?.length}, Shortest: ${allSorted[allSorted.length - 1]?.length}`);
+    console.log(`  Small D (<85): ${smallDiameter.length}, Large D (>=85): ${largeDiameter.length}`);
 
-    // PHASE 1: Place ALL cylinders that need horizontal orientation (length > H or big diameter)
-    // Start with longest cylinders first to reserve Y space
-    for (const cyl of allSorted) {
+    // PHASE 1: Place D<85 as VERTICAL first - they use MUCH less Y space
+    // D=78 vertical: 78cm Y vs 160cm horizontal (saves 82cm per cylinder!)
+    // D=77 vertical: 77cm Y vs 152cm horizontal (saves 75cm per cylinder!)
+    smallDiameter.sort((a, b) => a.diameter - b.diameter); // Smallest first for tight packing
+
+    for (const cyl of smallDiameter) {
+      if (cyl.placed) continue;
+      if (cyl.length > this.H) continue; // Can't be vertical
+
+      let found = false;
+
+      // Find vertical position
+      for (let y = 0; y + cyl.diameter <= this.L && !found; y += cyl.diameter) {
+        for (let x = 0; x + cyl.diameter <= this.W && !found; x += cyl.diameter) {
+          const pos = { x, y, z: 0 };
+          if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            placeCyl(cyl, pos, 'vertical');
+            found = true;
+          }
+        }
+      }
+    }
+
+    console.log(`  After vertical phase: ${placed.length} placed`);
+
+    // PHASE 2: Place D>=85 as HORIZONTAL
+    // Sort by length DESCENDING - longest (L=149.9) gets placed first
+    largeDiameter.sort((a, b) => b.length - a.length);
+
+    for (const cyl of largeDiameter) {
       if (cyl.placed) continue;
 
       const { diameter, length } = cyl;
-      const mustBeHorizontal = length > this.H;
-      const preferHorizontal = diameter >= 85; // D=85+ works better horizontal
+      let found = false;
 
-      if (mustBeHorizontal || preferHorizontal) {
-        // Find horizontal position - try existing Y positions first, then new
-        let found = false;
+      // Get Z levels (floor + tops of verticals)
+      const zLevels = [0];
+      for (const box of placedBoxes) {
+        if (!zLevels.includes(box.zMax)) zLevels.push(box.zMax);
+      }
+      zLevels.sort((a, b) => a - b);
 
-        // Get all Z levels
-        const zLevels = [0];
-        for (const box of placedBoxes) {
-          if (!zLevels.includes(box.zMax)) zLevels.push(box.zMax);
+      // Try each Z level
+      for (const z of zLevels) {
+        if (z + diameter > this.H || found) continue;
+
+        for (let y = 0; y + length <= this.L && !found; y += 5) {
+          for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, diameter, length, placedBoxes)) {
+              if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+                placeCyl(cyl, pos, 'horizontal');
+                found = true;
+              }
+            }
+          }
         }
-        zLevels.sort((a, b) => a - b);
+      }
 
+      // Fine search if not found
+      if (!found) {
         for (const z of zLevels) {
           if (z + diameter > this.H || found) continue;
-
-          // Try to find Y position at this Z
-          for (let y = 0; y + length <= this.L && !found; y += 5) {
-            for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
+          for (let y = 0; y + length <= this.L && !found; y += 1) {
+            for (let x = 0; x + diameter <= this.W && !found; x += 1) {
               const pos = { x, y, z };
               if (this.canPlace(pos, diameter, length, placedBoxes)) {
                 if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
@@ -455,65 +495,14 @@ export class OptimizedCoilSolver {
             }
           }
         }
-
-        // If not found at existing Z, try fine search
-        if (!found) {
-          for (const z of zLevels) {
-            if (z + diameter > this.H || found) continue;
-            for (let y = 0; y + length <= this.L && !found; y += 1) {
-              for (let x = 0; x + diameter <= this.W && !found; x += 1) {
-                const pos = { x, y, z };
-                if (this.canPlace(pos, diameter, length, placedBoxes)) {
-                  if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
-                    placeCyl(cyl, pos, 'horizontal');
-                    found = true;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`  After horizontal pass: ${placed.length} placed`);
-
-    // PHASE 2: Place remaining as VERTICAL (D=77, D=78 work great vertical)
-    const remaining1 = allSorted.filter(c => !c.placed && c.length <= this.H);
-    remaining1.sort((a, b) => a.diameter - b.diameter); // Smallest diameter first for vertical
-
-    for (const cyl of remaining1) {
-      if (cyl.placed) continue;
-
-      const { diameter, length } = cyl;
-      let found = false;
-
-      // Find vertical position
-      for (let y = 0; y + diameter <= this.L && !found; y += diameter) {
-        for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
-          const pos = { x, y, z: 0 };
-          if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
-            placeCyl(cyl, pos, 'vertical');
-            found = true;
-          }
-        }
       }
 
-      // Fine search if not found
       if (!found) {
-        for (let y = 0; y + diameter <= this.L && !found; y += 1) {
-          for (let x = 0; x + diameter <= this.W && !found; x += 1) {
-            const pos = { x, y, z: 0 };
-            if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
-              placeCyl(cyl, pos, 'vertical');
-              found = true;
-            }
-          }
-        }
+        console.log(`    FAILED horizontal for D${diameter} L${length}`);
       }
     }
 
-    console.log(`  After vertical pass: ${placed.length} placed`);
+    console.log(`  After horizontal phase: ${placed.length} placed`);
 
     // PHASE 3: Place ANY remaining cylinders anywhere they fit
     const remaining2 = allCylinders.filter(c => !c.placed);
