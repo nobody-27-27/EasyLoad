@@ -69,6 +69,7 @@ export class OptimizedCoilSolver {
 
     // Try multiple strategies and pick the best result
     const strategies = [
+      () => this.packSmartBestFit(all), // FAST: picks best cylinder-position combo at each step
       () => this.packHexagonalOptimized(all), // Optimized hexagonal - best for same-diameter cylinders
       () => this.packDifficultFirst(all), // Place large-diameter cylinders first (vertical)
       () => this.packMixedOrientations(all), // TRUE mixed orientation - tries both for each cylinder
@@ -93,7 +94,7 @@ export class OptimizedCoilSolver {
       () => this.packHorizontalStackedOptimal(all), // Horizontal with optimal Z-stacking for all 58
       () => this.packByLengthGroups(all), // Group by length for efficient Y-utilization
       () => this.packReserveD85First(all), // Reserve positions for D=85x149.9 first, then pack rest
-      () => this.packBestFitGreedy(all), // Best fit: evaluate ALL positions for each cylinder, pick best
+      () => this.packBestFitGreedySlow(all), // Slower but thorough best-fit (fallback)
     ];
 
     let bestResult: { placed: PlacedCylinder[]; unplaced: CargoItem[]; placedBoxes: PlacedBox[] } | null = null;
@@ -367,6 +368,225 @@ export class OptimizedCoilSolver {
       unplacedItems: unplaced,
       statistics: this.calcStats(uniquePlaced, unplaced.length),
     };
+  }
+
+  /**
+   * FAST Smart Best-Fit: At each step, pick which cylinder-position combo is globally best
+   * Key difference from other strategies: doesn't use fixed cylinder order
+   * Instead, evaluates all remaining cylinders and picks the one that fits best
+   */
+  private packSmartBestFit(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`=== SMART BEST-FIT PACKING ===`);
+
+    const totalCylinders = allCylinders.length;
+    const step = 15; // Coarse grid for speed
+
+    // Pre-compute valid positions grid (will be refined as we place)
+    let iteration = 0;
+
+    while (allCylinders.some(c => !c.placed)) {
+      iteration++;
+      if (iteration > totalCylinders + 10) break; // Safety limit
+
+      // Find the best cylinder-position combination
+      let bestChoice: {
+        cyl: Cylinder;
+        pos: { x: number; y: number; z: number };
+        orientation: 'horizontal-y' | 'horizontal-x' | 'vertical';
+        score: number;
+      } | null = null;
+
+      const unplacedCyls = allCylinders.filter(c => !c.placed);
+
+      // Get available Z levels
+      const zLevels = [0, ...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
+
+      // Get available Y positions
+      const yPositions = [0];
+      for (const box of placedBoxes) {
+        if (!yPositions.includes(box.yMax)) yPositions.push(box.yMax);
+      }
+      yPositions.sort((a, b) => a - b);
+
+      for (const cyl of unplacedCyls) {
+        const { diameter, length } = cyl;
+
+        // Try HORIZONTAL-Y orientation
+        for (const z of zLevels) {
+          if (z + diameter > this.H) continue;
+
+          for (const yStart of yPositions) {
+            for (let y = yStart; y + length <= this.L; y += step) {
+              for (let x = 0; x + diameter <= this.W; x += step) {
+                const pos = { x, y, z };
+                if (this.canPlace(pos, diameter, length, placedBoxes)) {
+                  if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+                    // Score: prefer lower Z, lower Y, fills gaps
+                    const score = z * 3 + y * 0.5 + x * 0.1;
+                    if (!bestChoice || score < bestChoice.score) {
+                      bestChoice = { cyl, pos, orientation: 'horizontal-y', score };
+                    }
+                  }
+                }
+              }
+              if (bestChoice && bestChoice.score < 10) break; // Found floor position, good enough
+            }
+            if (bestChoice && bestChoice.score < 10) break;
+          }
+          if (bestChoice && bestChoice.score < 10) break;
+        }
+
+        // Try VERTICAL orientation (if length fits in height)
+        if (length <= this.H) {
+          for (const z of zLevels) {
+            if (z + length > this.H) continue;
+
+            for (const yStart of yPositions) {
+              for (let y = yStart; y + diameter <= this.L; y += step) {
+                for (let x = 0; x + diameter <= this.W; x += step) {
+                  const pos = { x, y, z };
+                  if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
+                    if (z === 0 || this.hasVerticalSupportRelaxed(pos, diameter, placedBoxes)) {
+                      // Vertical gets small bonus (saves Y space)
+                      const score = z * 3 + y * 0.5 + x * 0.1 - 5;
+                      if (!bestChoice || score < bestChoice.score) {
+                        bestChoice = { cyl, pos, orientation: 'vertical', score };
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Try HORIZONTAL-X orientation (if length fits in width)
+        if (length <= this.W) {
+          for (const z of zLevels) {
+            if (z + diameter > this.H) continue;
+
+            for (const yStart of yPositions) {
+              for (let y = yStart; y + diameter <= this.L; y += step) {
+                for (let x = 0; x + length <= this.W; x += step) {
+                  const pos = { x, y, z };
+                  if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
+                    if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+                      const score = z * 3 + y * 0.5 + x * 0.1;
+                      if (!bestChoice || score < bestChoice.score) {
+                        bestChoice = { cyl, pos, orientation: 'horizontal-x', score };
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Place the best choice
+      if (bestChoice) {
+        const { cyl, pos, orientation } = bestChoice;
+
+        if (orientation === 'vertical') {
+          const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+          placed.push(placedCyl);
+          placedBoxes.push({
+            xMin: pos.x, xMax: pos.x + cyl.diameter,
+            yMin: pos.y, yMax: pos.y + cyl.diameter,
+            zMin: pos.z, zMax: pos.z + cyl.length,
+          });
+        } else if (orientation === 'horizontal-x') {
+          const placedCyl = this.createRotatedPlacedCylinder(cyl, pos);
+          placed.push(placedCyl);
+          placedBoxes.push({
+            xMin: pos.x, xMax: pos.x + cyl.length,
+            yMin: pos.y, yMax: pos.y + cyl.diameter,
+            zMin: pos.z, zMax: pos.z + cyl.diameter,
+          });
+        } else {
+          const placedCyl = this.createPlacedCylinder(cyl, pos);
+          placed.push(placedCyl);
+          placedBoxes.push({
+            xMin: pos.x, xMax: pos.x + cyl.diameter,
+            yMin: pos.y, yMax: pos.y + cyl.length,
+            zMin: pos.z, zMax: pos.z + cyl.diameter,
+          });
+        }
+        cyl.placed = true;
+      } else {
+        // No valid position found for any remaining cylinder
+        // Try finer search for remaining
+        break;
+      }
+    }
+
+    // Fine-grained pass for any remaining cylinders
+    const remaining = allCylinders.filter(c => !c.placed);
+    if (remaining.length > 0) {
+      console.log(`  Fine search for ${remaining.length} remaining cylinders`);
+
+      for (const cyl of remaining) {
+        // Try all positions with step=5
+        let found = false;
+
+        // Try horizontal-y
+        for (let z = 0; z + cyl.diameter <= this.H && !found; z += cyl.diameter) {
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  placedBoxes.push({
+                    xMin: pos.x, xMax: pos.x + cyl.diameter,
+                    yMin: pos.y, yMax: pos.y + cyl.length,
+                    zMin: pos.z, zMax: pos.z + cyl.diameter,
+                  });
+                  cyl.placed = true;
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+
+        // Try vertical
+        if (!found && cyl.length <= this.H) {
+          for (let z = 0; z + cyl.length <= this.H && !found; z += 10) {
+            for (let y = 0; y + cyl.diameter <= this.L && !found; y += 5) {
+              for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+                const pos = { x, y, z };
+                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (z === 0 || this.hasVerticalSupportRelaxed(pos, cyl.diameter, placedBoxes)) {
+                    const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                    placed.push(placedCyl);
+                    placedBoxes.push({
+                      xMin: pos.x, xMax: pos.x + cyl.diameter,
+                      yMin: pos.y, yMax: pos.y + cyl.diameter,
+                      zMin: pos.z, zMax: pos.z + cyl.length,
+                    });
+                    cyl.placed = true;
+                    found = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`  packSmartBestFit result: ${placed.length}/${totalCylinders} placed`);
+
+    const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    return { placed, unplaced };
   }
 
   /**
@@ -4353,7 +4573,7 @@ export class OptimizedCoilSolver {
    * 3. Uses all three orientations (horizontal-Y, horizontal-X, vertical)
    * 4. Stacks on horizontals, in valleys, and on top of verticals
    */
-  private packBestFitGreedy(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+  private packBestFitGreedySlow(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     console.log('=== Strategy: packBestFitGreedy (evaluate all positions per cylinder) ===');
 
     const placed: PlacedCylinder[] = [];
