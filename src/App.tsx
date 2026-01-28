@@ -71,9 +71,19 @@ export default function App() {
 
           {/* Yük Listesi */}
           <div>
-            <h4 className="text-sm font-bold text-gray-500 mb-2 border-b pb-1">
-              Yük Listesi ({cargoList.length})
-            </h4>
+            <div className="flex justify-between items-center mb-2 border-b pb-1">
+              <h4 className="text-sm font-bold text-gray-500">
+                Yük Listesi ({cargoList.length})
+              </h4>
+              {cargoList.length > 0 && (
+                <button
+                  onClick={() => useStore.getState().reset()}
+                  className="text-xs text-red-500 hover:text-red-700 font-medium px-2 py-1 hover:bg-red-50 rounded transition-colors"
+                >
+                  Tümünü Temizle
+                </button>
+              )}
+            </div>
             <ul className="space-y-2 max-h-60 overflow-y-auto pr-1">
               {cargoList.map((item) => (
                 <li

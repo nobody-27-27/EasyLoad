@@ -201,5 +201,17 @@ export const useStore = create<AppState>((set, get) => ({
     // Toast notification will be shown by the component
   },
 
-  reset: () => set({ cargoList: [], resultItems: [] }),
+  reset: () => set({
+    cargoList: [],
+    resultItems: [],
+    unplacedSummary: [],
+    stats: {
+      totalVolume: 0,
+      usedVolume: 0,
+      fillRate: 0,
+      placedCount: 0,
+      totalCount: 0,
+      unplacedCount: 0,
+    },
+  }),
 }));
