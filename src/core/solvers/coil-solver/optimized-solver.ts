@@ -433,34 +433,50 @@ export class OptimizedCoilSolver {
 
     // PHASE 1: Calculate vertical benefit score for each cylinder
     // Score = Y-space savings ratio when placed vertically vs horizontally
+
+    // First, calculate median diameter to determine "small" vs "large"
+    const allDiameters = allCylinders.map(c => c.diameter).sort((a, b) => a - b);
+    const medianDiameter = allDiameters[Math.floor(allDiameters.length / 2)];
+
+    // Dynamic threshold: cylinders with diameter < median are "small" and benefit from vertical
+    // This adapts to any cylinder mix rather than hardcoding values like "85"
+    const diameterThreshold = medianDiameter;
+    console.log(`  Median diameter: ${medianDiameter}, threshold for vertical: < ${diameterThreshold}`);
+
     const scoredCylinders = allCylinders.map(cyl => {
       const canBeVertical = cyl.length <= this.H;
       const ySavings = cyl.length - cyl.diameter; // Absolute Y-space saved
       const savingsRatio = ySavings / cyl.length; // Relative savings (0 to 1)
+
+      // Key insight: only SMALL diameter cylinders should be vertical
+      // Large diameter cylinders should be horizontal so they can stack on top
+      const isSmallDiameter = cyl.diameter < diameterThreshold;
 
       return {
         cyl,
         canBeVertical,
         ySavings,
         savingsRatio,
+        isSmallDiameter,
         // Composite score: higher = more benefit from vertical
-        // Considers both relative savings and absolute savings
-        verticalScore: canBeVertical ? savingsRatio * Math.sqrt(ySavings) : -Infinity
+        verticalScore: canBeVertical && isSmallDiameter ? savingsRatio * Math.sqrt(ySavings) : -Infinity
       };
     });
 
     // Separate into candidates for vertical vs horizontal placement
+    // Vertical: small diameter + can be vertical + decent savings
     const verticalCandidates = scoredCylinders
-      .filter(s => s.canBeVertical && s.savingsRatio > 0.3) // At least 30% Y-space savings
+      .filter(s => s.canBeVertical && s.isSmallDiameter && s.savingsRatio > 0.3)
       .sort((a, b) => b.verticalScore - a.verticalScore); // Highest benefit first
 
+    // Horizontal: large diameter OR low savings OR can't be vertical
     const horizontalCandidates = scoredCylinders
-      .filter(s => !s.canBeVertical || s.savingsRatio <= 0.3)
+      .filter(s => !s.canBeVertical || !s.isSmallDiameter || s.savingsRatio <= 0.3)
       .map(s => s.cyl)
       .sort((a, b) => b.length - a.length); // Longest first
 
-    console.log(`  Vertical candidates (>30% savings): ${verticalCandidates.length}`);
-    console.log(`  Horizontal candidates: ${horizontalCandidates.length}`);
+    console.log(`  Vertical candidates (small D + >30% savings): ${verticalCandidates.length}`);
+    console.log(`  Horizontal candidates (large D or low savings): ${horizontalCandidates.length}`);
 
     // Log the scoring for debugging
     for (const s of scoredCylinders.slice(0, 5)) {
