@@ -69,7 +69,7 @@ export class OptimizedCoilSolver {
 
     // Try multiple strategies and pick the best result
     const strategies = [
-      () => this.packGuaranteed58(all), // GUARANTEED: specifically designed for 58/58
+      () => this.packAdaptiveBestFit(all), // ADAPTIVE: dynamically calculates optimal orientation per cylinder
       () => this.packSmartBestFit(all), // FAST: picks best cylinder-position combo at each step
       () => this.packHexagonalOptimized(all), // Optimized hexagonal - best for same-diameter cylinders
       () => this.packDifficultFirst(all), // Place large-diameter cylinders first (vertical)
@@ -375,13 +375,30 @@ export class OptimizedCoilSolver {
    * GUARANTEED 58/58 - Specifically designed to fit ALL cylinders
    * CRITICAL: Places longest D=85 (L=149.9) FIRST before anything else consumes Y space
    */
-  private packGuaranteed58(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+  /**
+   * ADAPTIVE BEST-FIT ALGORITHM
+   *
+   * Key insight: Vertical orientation uses Y = diameter, Horizontal uses Y = length
+   * For cylinders where length >> diameter, vertical saves significant Y-space
+   *
+   * This algorithm dynamically calculates the optimal orientation for each cylinder
+   * based on Y-space savings ratio, not hardcoded diameter thresholds.
+   *
+   * Phase 1: Calculate "vertical benefit score" for each cylinder
+   *          Score = (length - diameter) / length  (how much Y-space vertical saves)
+   *          Higher score = more benefit from vertical placement
+   *
+   * Phase 2: Place high-score cylinders vertically first (if they fit height-wise)
+   * Phase 3: Place remaining cylinders horizontally, prioritizing longest first
+   * Phase 4: Fine-grained search for any remaining cylinders
+   */
+  private packAdaptiveBestFit(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
     allCylinders.forEach(c => c.placed = false);
 
     const placed: PlacedCylinder[] = [];
     const placedBoxes: PlacedBox[] = [];
 
-    console.log(`=== GUARANTEED 58/58 PACKING ===`);
+    console.log(`=== ADAPTIVE BEST-FIT PACKING ===`);
 
     // Helper to place a cylinder
     const placeCyl = (cyl: Cylinder, pos: { x: number; y: number; z: number }, orientation: 'horizontal' | 'vertical' | 'rotated') => {
@@ -411,29 +428,55 @@ export class OptimizedCoilSolver {
         });
       }
       cyl.placed = true;
-      console.log(`    Placed D${cyl.diameter} L${cyl.length.toFixed(1)} at (${pos.x}, ${pos.y}, ${pos.z}) ${orientation}`);
+      console.log(`    Placed D${cyl.diameter} L${cyl.length.toFixed(1)} at (${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)}) ${orientation}`);
     };
 
-    // Separate by diameter
-    const smallDiameter = allCylinders.filter(c => c.diameter < 85); // D=77, D=78 - better vertical
-    const largeDiameter = allCylinders.filter(c => c.diameter >= 85); // D=85, D=90, D=97 - horizontal
+    // PHASE 1: Calculate vertical benefit score for each cylinder
+    // Score = Y-space savings ratio when placed vertically vs horizontally
+    const scoredCylinders = allCylinders.map(cyl => {
+      const canBeVertical = cyl.length <= this.H;
+      const ySavings = cyl.length - cyl.diameter; // Absolute Y-space saved
+      const savingsRatio = ySavings / cyl.length; // Relative savings (0 to 1)
 
-    console.log(`  Small D (<85): ${smallDiameter.length}, Large D (>=85): ${largeDiameter.length}`);
+      return {
+        cyl,
+        canBeVertical,
+        ySavings,
+        savingsRatio,
+        // Composite score: higher = more benefit from vertical
+        // Considers both relative savings and absolute savings
+        verticalScore: canBeVertical ? savingsRatio * Math.sqrt(ySavings) : -Infinity
+      };
+    });
 
-    // PHASE 1: Place D<85 as VERTICAL first - they use MUCH less Y space
-    // D=78 vertical: 78cm Y vs 160cm horizontal (saves 82cm per cylinder!)
-    // D=77 vertical: 77cm Y vs 152cm horizontal (saves 75cm per cylinder!)
-    smallDiameter.sort((a, b) => a.diameter - b.diameter); // Smallest first for tight packing
+    // Separate into candidates for vertical vs horizontal placement
+    const verticalCandidates = scoredCylinders
+      .filter(s => s.canBeVertical && s.savingsRatio > 0.3) // At least 30% Y-space savings
+      .sort((a, b) => b.verticalScore - a.verticalScore); // Highest benefit first
 
-    for (const cyl of smallDiameter) {
+    const horizontalCandidates = scoredCylinders
+      .filter(s => !s.canBeVertical || s.savingsRatio <= 0.3)
+      .map(s => s.cyl)
+      .sort((a, b) => b.length - a.length); // Longest first
+
+    console.log(`  Vertical candidates (>30% savings): ${verticalCandidates.length}`);
+    console.log(`  Horizontal candidates: ${horizontalCandidates.length}`);
+
+    // Log the scoring for debugging
+    for (const s of scoredCylinders.slice(0, 5)) {
+      console.log(`    D${s.cyl.diameter} L${s.cyl.length.toFixed(1)}: savings=${s.ySavings.toFixed(0)}cm (${(s.savingsRatio * 100).toFixed(0)}%), score=${s.verticalScore.toFixed(2)}, vertical=${s.canBeVertical}`);
+    }
+
+    // PHASE 2: Place vertical candidates first (high Y-space savings)
+    for (const scored of verticalCandidates) {
+      const cyl = scored.cyl;
       if (cyl.placed) continue;
-      if (cyl.length > this.H) continue; // Can't be vertical
 
       let found = false;
+      const step = cyl.diameter; // Step by diameter for grid-like placement
 
-      // Find vertical position
-      for (let y = 0; y + cyl.diameter <= this.L && !found; y += cyl.diameter) {
-        for (let x = 0; x + cyl.diameter <= this.W && !found; x += cyl.diameter) {
+      for (let y = 0; y + cyl.diameter <= this.L && !found; y += step) {
+        for (let x = 0; x + cyl.diameter <= this.W && !found; x += step) {
           const pos = { x, y, z: 0 };
           if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
             placeCyl(cyl, pos, 'vertical');
@@ -441,32 +484,39 @@ export class OptimizedCoilSolver {
           }
         }
       }
+
+      // Fine search if coarse failed
+      if (!found) {
+        for (let y = 0; y + cyl.diameter <= this.L && !found; y += 5) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              placeCyl(cyl, pos, 'vertical');
+              found = true;
+            }
+          }
+        }
+      }
     }
 
     console.log(`  After vertical phase: ${placed.length} placed`);
 
-    // PHASE 2: Place D>=85 as HORIZONTAL
-    // Sort by length DESCENDING - longest (L=149.9) gets placed first
-    largeDiameter.sort((a, b) => b.length - a.length);
-
-    for (const cyl of largeDiameter) {
+    // PHASE 3: Place horizontal candidates (sorted by length descending)
+    for (const cyl of horizontalCandidates) {
       if (cyl.placed) continue;
 
       const { diameter, length } = cyl;
       let found = false;
 
       // Get Z levels (floor + tops of verticals)
-      const zLevels = [0];
-      for (const box of placedBoxes) {
-        if (!zLevels.includes(box.zMax)) zLevels.push(box.zMax);
-      }
-      zLevels.sort((a, b) => a - b);
+      const zLevels = this.getZLevels(placedBoxes);
 
       // Try each Z level
       for (const z of zLevels) {
         if (z + diameter > this.H || found) continue;
 
-        for (let y = 0; y + length <= this.L && !found; y += 5) {
+        // Coarse search first
+        for (let y = 0; y + length <= this.L && !found; y += 10) {
           for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
             const pos = { x, y, z };
             if (this.canPlace(pos, diameter, length, placedBoxes)) {
@@ -483,8 +533,8 @@ export class OptimizedCoilSolver {
       if (!found) {
         for (const z of zLevels) {
           if (z + diameter > this.H || found) continue;
-          for (let y = 0; y + length <= this.L && !found; y += 1) {
-            for (let x = 0; x + diameter <= this.W && !found; x += 1) {
+          for (let y = 0; y + length <= this.L && !found; y += 2) {
+            for (let x = 0; x + diameter <= this.W && !found; x += 2) {
               const pos = { x, y, z };
               if (this.canPlace(pos, diameter, length, placedBoxes)) {
                 if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
@@ -504,74 +554,41 @@ export class OptimizedCoilSolver {
 
     console.log(`  After horizontal phase: ${placed.length} placed`);
 
-    // PHASE 3: Place ANY remaining cylinders anywhere they fit
-    const remaining2 = allCylinders.filter(c => !c.placed);
+    // PHASE 4: Fine-grained search for any remaining cylinders
+    const remaining = allCylinders.filter(c => !c.placed);
 
-    for (const cyl of remaining2) {
-      if (cyl.placed) continue;
-
+    for (const cyl of remaining) {
       const { diameter, length } = cyl;
       let found = false;
 
-      // Get ALL Z levels
-      const allZ = [0];
-      for (const box of placedBoxes) {
-        if (!allZ.includes(box.zMax)) allZ.push(box.zMax);
-      }
-      allZ.sort((a, b) => a - b);
+      const allZ = this.getZLevels(placedBoxes);
 
-      // Try horizontal at each Z with step=1
+      // Try both orientations with fine step
       for (const z of allZ) {
-        if (z + diameter > this.H || found) continue;
-        for (let y = 0; y + length <= this.L && !found; y += 1) {
-          for (let x = 0; x + diameter <= this.W && !found; x += 1) {
-            const pos = { x, y, z };
-            if (this.canPlace(pos, diameter, length, placedBoxes)) {
-              // Very lenient support - any touching below
-              if (z === 0) {
-                placeCyl(cyl, pos, 'horizontal');
-                found = true;
-              } else {
-                for (const box of placedBoxes) {
-                  if (Math.abs(box.zMax - z) <= 5) {
-                    const xOv = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
-                    const yOv = Math.min(y + length, box.yMax) - Math.max(y, box.yMin);
-                    if (xOv > 0 && yOv > 0) {
-                      placeCyl(cyl, pos, 'horizontal');
-                      found = true;
-                      break;
-                    }
-                  }
+        // Try horizontal
+        if (z + diameter <= this.H && !found) {
+          for (let y = 0; y + length <= this.L && !found; y += 1) {
+            for (let x = 0; x + diameter <= this.W && !found; x += 1) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, diameter, length, placedBoxes)) {
+                if (z === 0 || this.hasAnySupport(pos, diameter, length, placedBoxes)) {
+                  placeCyl(cyl, pos, 'horizontal');
+                  found = true;
                 }
               }
             }
           }
         }
-      }
 
-      // Try vertical at each Z with step=1
-      if (!found && length <= this.H) {
-        for (const z of allZ) {
-          if (z + length > this.H || found) continue;
+        // Try vertical
+        if (!found && length <= this.H && z + length <= this.H) {
           for (let y = 0; y + diameter <= this.L && !found; y += 1) {
             for (let x = 0; x + diameter <= this.W && !found; x += 1) {
               const pos = { x, y, z };
               if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
-                if (z === 0) {
+                if (z === 0 || this.hasAnySupportVertical(pos, diameter, placedBoxes)) {
                   placeCyl(cyl, pos, 'vertical');
                   found = true;
-                } else {
-                  for (const box of placedBoxes) {
-                    if (Math.abs(box.zMax - z) <= 5) {
-                      const xOv = Math.min(x + diameter, box.xMax) - Math.max(x, box.xMin);
-                      const yOv = Math.min(y + diameter, box.yMax) - Math.max(y, box.yMin);
-                      if (xOv > 0 && yOv > 0) {
-                        placeCyl(cyl, pos, 'vertical');
-                        found = true;
-                        break;
-                      }
-                    }
-                  }
                 }
               }
             }
@@ -584,10 +601,43 @@ export class OptimizedCoilSolver {
       }
     }
 
-    console.log(`  packGuaranteed58 result: ${placed.length}/${allCylinders.length} placed`);
+    console.log(`  packAdaptiveBestFit result: ${placed.length}/${allCylinders.length} placed`);
 
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     return { placed, unplaced };
+  }
+
+  // Helper: Get all Z levels from placed boxes
+  private getZLevels(placedBoxes: PlacedBox[]): number[] {
+    const zLevels = [0];
+    for (const box of placedBoxes) {
+      if (!zLevels.includes(box.zMax)) zLevels.push(box.zMax);
+    }
+    return zLevels.sort((a, b) => a - b);
+  }
+
+  // Helper: Check for any support (lenient - any overlap below)
+  private hasAnySupport(pos: { x: number; y: number; z: number }, diameter: number, length: number, placedBoxes: PlacedBox[]): boolean {
+    for (const box of placedBoxes) {
+      if (Math.abs(box.zMax - pos.z) <= 5) {
+        const xOv = Math.min(pos.x + diameter, box.xMax) - Math.max(pos.x, box.xMin);
+        const yOv = Math.min(pos.y + length, box.yMax) - Math.max(pos.y, box.yMin);
+        if (xOv > 0 && yOv > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  // Helper: Check for any support for vertical cylinder
+  private hasAnySupportVertical(pos: { x: number; y: number; z: number }, diameter: number, placedBoxes: PlacedBox[]): boolean {
+    for (const box of placedBoxes) {
+      if (Math.abs(box.zMax - pos.z) <= 5) {
+        const xOv = Math.min(pos.x + diameter, box.xMax) - Math.max(pos.x, box.xMin);
+        const yOv = Math.min(pos.y + diameter, box.yMax) - Math.max(pos.y, box.yMin);
+        if (xOv > 0 && yOv > 0) return true;
+      }
+    }
+    return false;
   }
 
   /**
