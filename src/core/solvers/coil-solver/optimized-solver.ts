@@ -434,14 +434,24 @@ export class OptimizedCoilSolver {
     // PHASE 1: Calculate vertical benefit score for each cylinder
     // Score = Y-space savings ratio when placed vertically vs horizontally
 
-    // First, calculate median diameter to determine "small" vs "large"
-    const allDiameters = allCylinders.map(c => c.diameter).sort((a, b) => a - b);
-    const medianDiameter = allDiameters[Math.floor(allDiameters.length / 2)];
+    // Find the largest gap in diameter distribution to separate "small" from "large"
+    // This works better than median because it groups similar diameters together
+    const uniqueDiameters = [...new Set(allCylinders.map(c => c.diameter))].sort((a, b) => a - b);
+    let maxGap = 0;
+    let gapThreshold = uniqueDiameters[uniqueDiameters.length - 1]; // Default: largest diameter
 
-    // Dynamic threshold: cylinders with diameter < median are "small" and benefit from vertical
-    // This adapts to any cylinder mix rather than hardcoding values like "85"
-    const diameterThreshold = medianDiameter;
-    console.log(`  Median diameter: ${medianDiameter}, threshold for vertical: < ${diameterThreshold}`);
+    for (let i = 0; i < uniqueDiameters.length - 1; i++) {
+      const gap = uniqueDiameters[i + 1] - uniqueDiameters[i];
+      if (gap > maxGap) {
+        maxGap = gap;
+        // Threshold is midpoint of the largest gap
+        gapThreshold = (uniqueDiameters[i] + uniqueDiameters[i + 1]) / 2;
+      }
+    }
+
+    // If no significant gap (all similar diameters), use a high threshold so all go vertical
+    const diameterThreshold = maxGap > 3 ? gapThreshold : uniqueDiameters[uniqueDiameters.length - 1] + 1;
+    console.log(`  Unique diameters: ${uniqueDiameters.join(', ')}, largest gap: ${maxGap.toFixed(1)}, threshold: ${diameterThreshold.toFixed(1)}`);
 
     const scoredCylinders = allCylinders.map(cyl => {
       const canBeVertical = cyl.length <= this.H;
