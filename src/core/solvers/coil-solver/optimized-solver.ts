@@ -128,11 +128,17 @@ export class OptimizedCoilSolver {
 
       if (!bestResult || result.placed.length > bestResult.placed.length) {
         bestResult = { ...result, placedBoxes };
+        console.log(`  -> New best result: ${result.placed.length} placed`);
       }
 
       // If all placed, we're done
-      if (result.unplaced.length === 0) break;
+      if (result.unplaced.length === 0) {
+        console.log(`  -> ALL CYLINDERS PLACED! Stopping strategy search.`);
+        break;
+      }
     }
+
+    console.log(`%cBest strategy result: ${bestResult!.placed.length}/${all.length} placed`, 'color: #00ff00; font-weight: bold');
 
     // CRITICAL: Sync c.placed flags to match bestResult BEFORE running fallback passes
     // This prevents duplicates from being added
@@ -398,7 +404,7 @@ export class OptimizedCoilSolver {
     const placed: PlacedCylinder[] = [];
     const placedBoxes: PlacedBox[] = [];
 
-    console.log(`=== ADAPTIVE BEST-FIT PACKING ===`);
+    console.log(`%c=== ADAPTIVE BEST-FIT PACKING ===`, 'background: #222; color: #bada55; font-size: 14px');
 
     // Helper to place a cylinder
     const placeCyl = (cyl: Cylinder, pos: { x: number; y: number; z: number }, orientation: 'horizontal' | 'vertical' | 'rotated') => {
@@ -548,9 +554,14 @@ export class OptimizedCoilSolver {
     // Get Z levels and sort: elevated (>0) first, then floor
     const zLevels = this.getZLevels(placedBoxes);
     const elevatedLevels = zLevels.filter(z => z > 0).sort((a, b) => a - b);
-    const floorLevels = zLevels.filter(z => z === 0);
 
-    console.log(`  Z levels for horizontal: elevated=${elevatedLevels}, floor=${floorLevels}`);
+    // Calculate actual Y extent of vertical placements
+    const verticalYExtent = placedBoxes.length > 0
+      ? Math.max(...placedBoxes.map(b => b.yMax))
+      : maxVerticalY;
+
+    console.log(`  Z levels for horizontal: elevated=${elevatedLevels.map(z => z.toFixed(0)).join(',')}`);
+    console.log(`  Vertical Y extent: 0 to ${verticalYExtent.toFixed(0)}`);
 
     for (const cyl of horizontalCandidates) {
       if (cyl.placed) continue;
@@ -558,19 +569,21 @@ export class OptimizedCoilSolver {
       const { diameter, length } = cyl;
       let found = false;
 
-      // FIRST: Try elevated Z levels (stacking on top of verticals)
-      // This shares Y footprint with verticals underneath
+      // FIRST: Try elevated Z levels ONLY within vertical Y extent
+      // This ensures horizontals stack ON TOP of verticals, sharing Y footprint
       for (const z of elevatedLevels) {
         if (z + diameter > this.H || found) continue;
 
-        // Coarse search - prioritize positions above verticals (low Y values)
-        for (let y = 0; y + length <= this.L && !found; y += 10) {
+        // CRITICAL: Only search Y positions where verticals are underneath
+        // This is Y=0 to verticalYExtent (where support exists)
+        for (let y = 0; y + length <= verticalYExtent + 50 && !found; y += 10) {
           for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
             const pos = { x, y, z };
             if (this.canPlace(pos, diameter, length, placedBoxes)) {
               if (this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
                 placeCyl(cyl, pos, 'horizontal');
                 found = true;
+                console.log(`      -> Stacked on vertical at z=${z.toFixed(0)}`);
               }
             }
           }
@@ -592,7 +605,7 @@ export class OptimizedCoilSolver {
 
       // Fine search on ALL levels if still not found
       if (!found) {
-        for (const z of [...elevatedLevels, ...floorLevels]) {
+        for (const z of [...elevatedLevels, 0]) {
           if (z + diameter > this.H || found) continue;
           for (let y = 0; y + length <= this.L && !found; y += 2) {
             for (let x = 0; x + diameter <= this.W && !found; x += 2) {
@@ -662,7 +675,7 @@ export class OptimizedCoilSolver {
       }
     }
 
-    console.log(`  packAdaptiveBestFit result: ${placed.length}/${allCylinders.length} placed`);
+    console.log(`%c  packAdaptiveBestFit result: ${placed.length}/${allCylinders.length} placed`, 'background: #222; color: #bada55; font-size: 14px');
 
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     return { placed, unplaced };
