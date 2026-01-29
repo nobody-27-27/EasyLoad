@@ -566,66 +566,14 @@ export class OptimizedCoilSolver {
     const largeDiameterCyls = horizontalCandidates.filter(c => c.diameter >= diameterThreshold);
     // Small horizontal cylinders will be placed in remaining space after verticals
 
-    // Reserve Y space at the BACK for D85 horizontals (they need ~150cm each in Y)
-    const avgLargeLength = largeDiameterCyls.length > 0
-      ? largeDiameterCyls.reduce((sum, c) => sum + c.length, 0) / largeDiameterCyls.length
-      : 150;
-    const largePerSection = 6; // 2 wide x 3 high
-    const sectionsNeeded = Math.ceil(largeDiameterCyls.length / largePerSection);
-    const reservedYForLarge = sectionsNeeded * avgLargeLength;
-    const largeStartY = this.L - reservedYForLarge;
+    console.log(`  Large diameter (D>=${diameterThreshold.toFixed(0)}): ${largeDiameterCyls.length} cyls`);
+    console.log(`  Vertical candidates: ${verticalCandidates.length} cyls`);
 
-    console.log(`  Large diameter (D>=${diameterThreshold.toFixed(0)}): ${largeDiameterCyls.length} cyls, need ${sectionsNeeded} sections, reserved Y=${largeStartY.toFixed(0)} to ${this.L}`);
+    // PHASE 2: Place VERTICALS FIRST in front area
+    // This creates a stacking surface for D85 horizontals
+    const maxVerticalY = this.L * 0.5; // Use front 50% for verticals
 
-    // Place D85 horizontals first at the BACK (high Y values)
-    let currentLargeY = Math.max(0, largeStartY);
-    for (const cyl of largeDiameterCyls) {
-      if (cyl.placed) continue;
-      let found = false;
-
-      // Try floor first (3 layers: z=0, z=85, z=170)
-      for (let layer = 0; layer < 3 && !found; layer++) {
-        const z = layer * cyl.diameter;
-        if (z + cyl.diameter > this.H) continue;
-
-        for (let y = currentLargeY; y + cyl.length <= this.L && !found; y += 10) {
-          for (let x = 0; x + cyl.diameter <= this.W && !found; x += cyl.diameter) {
-            const pos = { x, y, z };
-            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-              if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                placeCyl(cyl, pos, 'horizontal');
-                found = true;
-              }
-            }
-          }
-        }
-      }
-
-      // Fine search if not found
-      if (!found) {
-        for (let z = 0; z + cyl.diameter <= this.H && !found; z += cyl.diameter) {
-          for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
-            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
-              const pos = { x, y, z };
-              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
-                  placeCyl(cyl, pos, 'horizontal');
-                  found = true;
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`  After large horizontal phase: ${placed.length} placed`);
-
-    // Now place VERTICALS in the FRONT (Y=0 to remaining space)
-    const usedYMax = placedBoxes.length > 0 ? Math.min(...placedBoxes.map(b => b.yMin)) : this.L;
-    const maxVerticalY = Math.min(usedYMax, this.L * 0.6); // Don't exceed 60% of Y
-
-    console.log(`  Vertical zone: Y=0 to ${maxVerticalY.toFixed(0)} (back starts at Y=${usedYMax.toFixed(0)})`);
+    console.log(`  Placing verticals in Y=0 to ${maxVerticalY.toFixed(0)}`);
 
     for (const scored of verticalCandidates) {
       const cyl = scored.cyl;
@@ -660,6 +608,79 @@ export class OptimizedCoilSolver {
 
     console.log(`  After vertical phase: ${placed.length} placed`);
 
+    // PHASE 3: Place D85 ON TOP of verticals (elevated Z)
+    // This shares Y footprint with verticals underneath!
+    const verticalZLevels = this.getZLevels(placedBoxes).filter(z => z > 0);
+    const verticalYExtent = placedBoxes.length > 0
+      ? Math.max(...placedBoxes.filter(b => b.zMax > b.xMax).map(b => b.yMax)) // Only vertical boxes
+      : maxVerticalY;
+
+    console.log(`  Vertical tops at Z: ${verticalZLevels.map(z => z.toFixed(0)).join(', ')}`);
+    console.log(`  Placing D85 ON TOP of verticals (sharing Y=0 to ${verticalYExtent.toFixed(0)})`);
+
+    for (const cyl of largeDiameterCyls) {
+      if (cyl.placed) continue;
+      let found = false;
+
+      // FIRST: Try stacking ON TOP of verticals (elevated Z, sharing Y footprint)
+      for (const z of verticalZLevels) {
+        if (z + cyl.diameter > this.H || found) continue;
+
+        // Search within vertical Y extent (where support exists)
+        for (let y = 0; y + cyl.length <= this.L && !found; y += 10) {
+          for (let x = 0; x + cyl.diameter <= this.W && !found; x += cyl.diameter) {
+            const pos = { x, y, z };
+            if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              if (this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                placeCyl(cyl, pos, 'horizontal');
+                found = true;
+                console.log(`      -> D85 STACKED on verticals at z=${z.toFixed(0)}`);
+              }
+            }
+          }
+        }
+      }
+
+      // SECOND: Try floor at back (beyond verticals)
+      if (!found) {
+        for (let y = maxVerticalY; y + cyl.length <= this.L && !found; y += 10) {
+          for (let layer = 0; layer < 3 && !found; layer++) {
+            const z = layer * cyl.diameter;
+            if (z + cyl.diameter > this.H) continue;
+
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += cyl.diameter) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  placeCyl(cyl, pos, 'horizontal');
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Fine search anywhere if still not found
+      if (!found) {
+        for (let z = 0; z + cyl.diameter <= this.H && !found; z += cyl.diameter) {
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  placeCyl(cyl, pos, 'horizontal');
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`  After D85 phase: ${placed.length} placed`);
+
     // PHASE 3: Place horizontal candidates - prioritize STACKING on verticals first
     // This shares Y footprint with verticals rather than requiring new Y space
 
@@ -667,13 +688,13 @@ export class OptimizedCoilSolver {
     const zLevels = this.getZLevels(placedBoxes);
     const elevatedLevels = zLevels.filter(z => z > 0).sort((a, b) => a - b);
 
-    // Calculate actual Y extent of vertical placements
-    const verticalYExtent = placedBoxes.length > 0
+    // Calculate actual Y extent of ALL placements so far
+    const currentYExtent = placedBoxes.length > 0
       ? Math.max(...placedBoxes.map(b => b.yMax))
       : maxVerticalY;
 
     console.log(`  Z levels for horizontal: elevated=${elevatedLevels.map(z => z.toFixed(0)).join(',')}`);
-    console.log(`  Vertical Y extent: 0 to ${verticalYExtent.toFixed(0)}`);
+    console.log(`  Current Y extent: 0 to ${currentYExtent.toFixed(0)}`);
 
     for (const cyl of horizontalCandidates) {
       if (cyl.placed) continue;
@@ -681,14 +702,13 @@ export class OptimizedCoilSolver {
       const { diameter, length } = cyl;
       let found = false;
 
-      // FIRST: Try elevated Z levels ONLY within vertical Y extent
+      // FIRST: Try elevated Z levels ONLY within current Y extent
       // This ensures horizontals stack ON TOP of verticals, sharing Y footprint
       for (const z of elevatedLevels) {
         if (z + diameter > this.H || found) continue;
 
-        // CRITICAL: Only search Y positions where verticals are underneath
-        // This is Y=0 to verticalYExtent (where support exists)
-        for (let y = 0; y + length <= verticalYExtent + 50 && !found; y += 10) {
+        // CRITICAL: Only search Y positions where support exists
+        for (let y = 0; y + length <= currentYExtent + 50 && !found; y += 10) {
           for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
             const pos = { x, y, z };
             if (this.canPlace(pos, diameter, length, placedBoxes)) {
