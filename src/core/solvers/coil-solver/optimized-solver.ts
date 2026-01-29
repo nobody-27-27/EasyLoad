@@ -481,15 +481,39 @@ export class OptimizedCoilSolver {
 
     // Separate into candidates for vertical vs horizontal placement
     // Vertical: small diameter + can be vertical + decent savings
-    const verticalCandidates = scoredCylinders
+    let verticalCandidates = scoredCylinders
       .filter(s => s.canBeVertical && s.isSmallDiameter && s.savingsRatio > 0.3)
       .sort((a, b) => b.verticalScore - a.verticalScore); // Highest benefit first
 
     // Horizontal: large diameter OR low savings OR can't be vertical
     const horizontalCandidates = scoredCylinders
       .filter(s => !s.canBeVertical || !s.isSmallDiameter || s.savingsRatio <= 0.3)
-      .map(s => s.cyl)
-      .sort((a, b) => b.length - a.length); // Longest first
+      .map(s => s.cyl);
+
+    // CRITICAL FIX: Don't make ALL small cylinders vertical!
+    // Limit verticals to use at most 40% of Y space, leaving room for horizontal floor placements
+    // This creates a MIXED layout: some vertical, some horizontal on the floor
+    const avgDiam = verticalCandidates.length > 0
+      ? verticalCandidates.reduce((sum, s) => sum + s.cyl.diameter, 0) / verticalCandidates.length
+      : 80;
+    const verticalsPerRow = Math.floor(this.W / avgDiam);
+    const maxVerticalYSpace = this.L * 0.4; // Use at most 40% of Y for verticals
+    const maxVerticalRows = Math.floor(maxVerticalYSpace / avgDiam);
+    const maxVerticals = maxVerticalRows * verticalsPerRow;
+
+    console.log(`  Max verticals: ${maxVerticals} (${maxVerticalRows} rows × ${verticalsPerRow} per row, using ${maxVerticalYSpace.toFixed(0)}cm Y)`);
+
+    // Only take the top N candidates for vertical placement, rest go horizontal
+    if (verticalCandidates.length > maxVerticals) {
+      console.log(`  Limiting vertical candidates from ${verticalCandidates.length} to ${maxVerticals}`);
+      const overflow = verticalCandidates.slice(maxVerticals);
+      verticalCandidates = verticalCandidates.slice(0, maxVerticals);
+      // Add overflow to horizontal candidates
+      horizontalCandidates.push(...overflow.map(s => s.cyl));
+    }
+
+    // Sort horizontal candidates: longest first for better packing
+    horizontalCandidates.sort((a, b) => b.length - a.length);
 
     console.log(`  Vertical candidates (small D + >30% savings): ${verticalCandidates.length}`);
     console.log(`  Horizontal candidates (large D or low savings): ${horizontalCandidates.length}`);
@@ -502,14 +526,9 @@ export class OptimizedCoilSolver {
     // PHASE 2: Place vertical candidates in a COMPACT block at the front (Y=0)
     // This reserves contiguous Y space for horizontal cylinders to stack on top
 
-    // Calculate how much Y space we need for verticals
-    // Container width fits ~3 verticals per row, so we need ceil(N/3) rows
-    const avgVerticalDiam = verticalCandidates.length > 0
-      ? verticalCandidates.reduce((sum, s) => sum + s.cyl.diameter, 0) / verticalCandidates.length
-      : 80;
-    const verticalsPerRow = Math.floor(this.W / avgVerticalDiam);
+    // Calculate how much Y space we need for verticals (reuse avgDiam and verticalsPerRow from above)
     const rowsNeeded = Math.ceil(verticalCandidates.length / verticalsPerRow);
-    const maxVerticalY = rowsNeeded * avgVerticalDiam;
+    const maxVerticalY = rowsNeeded * avgDiam;
 
     console.log(`  Vertical layout: ${verticalsPerRow} per row, ${rowsNeeded} rows needed, maxY=${maxVerticalY.toFixed(0)}`);
 
