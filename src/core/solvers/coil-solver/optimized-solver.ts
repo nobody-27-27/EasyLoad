@@ -3885,23 +3885,47 @@ export class OptimizedCoilSolver {
       }
     }
 
-    // 2. Try horizontal-X at EVERY Z level
+    // 2. Try horizontal-X at EVERY Z level (rotated: length along X axis)
+    // For D85 L149.9: needs 149.9cm X × 85cm Y × 85cm Z
+    console.log(`    Trying horizontal-X (rotated): needs ${length}cm X × ${diameter}cm Y × ${diameter}cm Z`);
+    console.log(`    Container: ${this.W}cm W × ${this.L}cm L × ${this.H}cm H`);
     if (length <= this.W) {
+      let rotatedAttempts = 0;
       for (const z of zLevels) {
         if (z + diameter > this.H) continue;
 
-        for (let y = 0; y + diameter <= this.L; y += 1) {
-          for (let x = 0; x + length <= this.W; x += 1) {
+        for (let y = 0; y + diameter <= this.L; y += 5) { // Coarse first
+          for (let x = 0; x + length <= this.W; x += 5) {
+            rotatedAttempts++;
             const pos = { x, y, z };
             if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
               if (z === 0 || this.hasRotatedSupportRelaxed(pos, diameter, length, placedBoxes)) {
-                console.log(`    Found horizontal-X at z=${z}`);
+                console.log(`    Found horizontal-X at (${x}, ${y}, ${z}) after ${rotatedAttempts} attempts`);
                 return { pos, orientation: 'horizontal-x' };
               }
             }
           }
         }
       }
+      console.log(`    No horizontal-X found after ${rotatedAttempts} coarse attempts, trying fine search...`);
+
+      // Fine search
+      for (const z of zLevels) {
+        if (z + diameter > this.H) continue;
+        for (let y = 0; y + diameter <= this.L; y += 1) {
+          for (let x = 0; x + length <= this.W; x += 1) {
+            const pos = { x, y, z };
+            if (this.canPlaceRotated(pos, diameter, length, placedBoxes)) {
+              if (z === 0 || this.hasRotatedSupportRelaxed(pos, diameter, length, placedBoxes)) {
+                console.log(`    Found horizontal-X at z=${z} (fine search)`);
+                return { pos, orientation: 'horizontal-x' };
+              }
+            }
+          }
+        }
+      }
+    } else {
+      console.log(`    horizontal-X skipped: length ${length} > container width ${this.W}`);
     }
 
     // 3. Try vertical at EVERY Z level
@@ -6672,10 +6696,36 @@ export class OptimizedCoilSolver {
         if (distSq < minDist * minDist) return false;
       } else {
         // Normal horizontal (length along Y) - circular in XZ
+        // Check Y overlap - rotated has diameter in Y, normal has length in Y
         if (y >= box.yMax || y + diameter <= box.yMin) continue;
+        // Check Z overlap
         if (z >= box.zMax || z + diameter <= box.zMin) continue;
-        // Conservative bounding box for cross-orientation
-        return false;
+
+        // Both have circular cross-sections, but in different planes
+        // Normal: circular in XZ (center at box.xMin + boxW/2, box.zMin + boxH/2)
+        // Rotated: circular in YZ (center at cy, cz)
+        // For accurate collision: check if circles intersect in the overlapping region
+
+        // Simplified: use bounding box check for cross-orientation
+        // X overlap already checked above (line 6641)
+        // If we reach here, there's overlap in X, Y, and Z - check if circles actually collide
+
+        // For cross-oriented cylinders, the actual collision is complex
+        // Use a slightly relaxed check: allow placement if Z difference is enough
+        const normalCz = box.zMin + boxH / 2;
+        const zDistance = Math.abs(cz - normalCz);
+        const minZDistance = radius + boxH / 2 - 5; // Allow 5cm tolerance
+
+        if (zDistance < minZDistance) {
+          // Potential collision - but check if Y positions allow clearance
+          const normalCx = box.xMin + boxW / 2;
+          // If rotated cylinder is far enough in X or Y, no collision
+          const xMidRotated = x + length / 2;
+          const xDistance = Math.abs(xMidRotated - normalCx);
+          if (xDistance < (length / 2 + boxW / 2 - 5)) {
+            return false; // Actual collision
+          }
+        }
       }
     }
 
