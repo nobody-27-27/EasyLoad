@@ -67,6 +67,28 @@ export class OptimizedCoilSolver {
     console.log(`Container: ${this.W} x ${this.L} x ${this.H} cm`);
     console.log(`Cylinders to place: ${all.length}`);
 
+    // FIRST: Try packAdaptiveBestFit exclusively - it's designed for this exact scenario
+    all.forEach(c => c.placed = false);
+    const adaptiveResult = this.packAdaptiveBestFit(all);
+    console.log(`%cpackAdaptiveBestFit: ${adaptiveResult.placed.length}/${all.length} placed`, 'color: #ff0; font-weight: bold');
+
+    if (adaptiveResult.unplaced.length === 0) {
+      // Adaptive placed all cylinders - use it exclusively!
+      console.log(`%cADAPTIVE PLACED ALL ${all.length} CYLINDERS!`, 'background: green; color: white; font-size: 16px');
+      // Sync placed flags
+      all.forEach(c => c.placed = false);
+      for (const p of adaptiveResult.placed) {
+        const matching = all.find(c => c.diameter === p.radius * 2 && c.length === p.length && !c.placed);
+        if (matching) matching.placed = true;
+      }
+      return {
+        placedCylinders: adaptiveResult.placed,
+        unplacedItems: [],
+        statistics: this.calcStats(adaptiveResult.placed, 0),
+      };
+    }
+
+    // Adaptive didn't place all - continue with other strategies
     // Try multiple strategies and pick the best result
     const strategies = [
       () => this.packAdaptiveBestFit(all), // ADAPTIVE: dynamically calculates optimal orientation per cylinder
