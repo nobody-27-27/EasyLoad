@@ -9,6 +9,7 @@ import type {
   PackingStatistics,
 } from './types';
 import { ORIENTATION_ROTATIONS } from './types';
+import { packingAIService, type PackingState, type AIAnalysisResult } from '../../ai/packing-ai-service';
 
 interface Cylinder {
   item: CargoItem;
@@ -37,11 +38,59 @@ export class OptimizedCoilSolver {
   private W: number;
   private L: number;
   private H: number;
+  public pendingAIAnalysis: PackingState | null = null;
 
   constructor(container: Container, _config: Partial<CoilSolverConfig> = {}) {
     this.W = container.dimensions.width;
     this.L = container.dimensions.length;
     this.H = container.dimensions.height;
+  }
+
+  /**
+   * Get AI analysis for unplaced cylinders
+   */
+  public async getAIAnalysis(): Promise<AIAnalysisResult | null> {
+    if (!this.pendingAIAnalysis) {
+      console.log('No pending AI analysis - all cylinders placed or solve() not called');
+      return null;
+    }
+
+    if (!packingAIService.hasApiKey()) {
+      console.error('Claude API key not set. Use packingAIService.setApiKey(key) first.');
+      return null;
+    }
+
+    console.log('%cRequesting AI analysis...', 'color: #00bfff; font-weight: bold');
+    const result = await packingAIService.analyzePackingProblem(this.pendingAIAnalysis);
+    console.log('%cAI Analysis Result:', 'color: #00bfff; font-weight: bold', result);
+    return result;
+  }
+
+  /**
+   * Find Y gaps on the floor level
+   */
+  private findYGaps(placedBoxes: PlacedBox[]): Array<{ start: number; end: number }> {
+    const floorBoxes = placedBoxes.filter(b => b.zMin === 0);
+    if (floorBoxes.length === 0) return [{ start: 0, end: this.L }];
+
+    const yRanges = floorBoxes.map(b => ({ min: b.yMin, max: b.yMax }));
+    yRanges.sort((a, b) => a.min - b.min);
+
+    const gaps: Array<{ start: number; end: number }> = [];
+    let currentEnd = 0;
+
+    for (const range of yRanges) {
+      if (range.min > currentEnd + 1) {
+        gaps.push({ start: currentEnd, end: range.min });
+      }
+      currentEnd = Math.max(currentEnd, range.max);
+    }
+
+    if (currentEnd < this.L - 1) {
+      gaps.push({ start: currentEnd, end: this.L });
+    }
+
+    return gaps;
   }
 
   public solve(items: CargoItem[]): CoilSolverResult {
@@ -361,6 +410,39 @@ export class OptimizedCoilSolver {
       }
 
       bestResult!.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+
+    // AI-ASSISTED PLACEMENT: If still unplaced cylinders, prepare AI analysis
+    const aiUnplaced = all.filter(c => !c.placed);
+    if (aiUnplaced.length > 0) {
+      console.log(`%cAI-assisted placement available for ${aiUnplaced.length} unplaced cylinders...`, 'color: #00bfff; font-weight: bold');
+
+      // Map orientations to AI-compatible format
+      const mapOrientation = (o: string): 'vertical' | 'horizontal' | 'rotated' => {
+        if (o === 'vertical') return 'vertical';
+        if (o === 'horizontal-x' || o === 'rotated') return 'rotated';
+        return 'horizontal';
+      };
+
+      // Store AI analysis request for async handling
+      this.pendingAIAnalysis = {
+        container: { width: this.W, length: this.L, height: this.H },
+        placedCylinders: bestResult!.placed.map(p => ({
+          diameter: p.radius * 2,
+          length: p.length,
+          position: { x: p.position.x, y: p.position.y, z: p.position.z },
+          orientation: mapOrientation(p.orientation),
+        })),
+        unplacedCylinders: aiUnplaced.map(c => ({
+          diameter: c.diameter,
+          length: c.length,
+          name: c.item.name,
+        })),
+        yGaps: this.findYGaps(bestResult!.placedBoxes),
+        zLevels: this.getZLevels(bestResult!.placedBoxes),
+      };
+
+      console.log('%cAI analysis available - call solver.getAIAnalysis() to get suggestions', 'color: #00bfff');
     }
 
     // FINAL FIX: Correctly calculate unplaced by comparing placed array with original all array
