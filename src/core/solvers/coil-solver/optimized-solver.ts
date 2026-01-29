@@ -483,7 +483,20 @@ export class OptimizedCoilSolver {
       console.log(`    D${s.cyl.diameter} L${s.cyl.length.toFixed(1)}: savings=${s.ySavings.toFixed(0)}cm (${(s.savingsRatio * 100).toFixed(0)}%), score=${s.verticalScore.toFixed(2)}, vertical=${s.canBeVertical}`);
     }
 
-    // PHASE 2: Place vertical candidates first (high Y-space savings)
+    // PHASE 2: Place vertical candidates in a COMPACT block at the front (Y=0)
+    // This reserves contiguous Y space for horizontal cylinders to stack on top
+
+    // Calculate how much Y space we need for verticals
+    // Container width fits ~3 verticals per row, so we need ceil(N/3) rows
+    const avgVerticalDiam = verticalCandidates.length > 0
+      ? verticalCandidates.reduce((sum, s) => sum + s.cyl.diameter, 0) / verticalCandidates.length
+      : 80;
+    const verticalsPerRow = Math.floor(this.W / avgVerticalDiam);
+    const rowsNeeded = Math.ceil(verticalCandidates.length / verticalsPerRow);
+    const maxVerticalY = rowsNeeded * avgVerticalDiam;
+
+    console.log(`  Vertical layout: ${verticalsPerRow} per row, ${rowsNeeded} rows needed, maxY=${maxVerticalY.toFixed(0)}`);
+
     for (const scored of verticalCandidates) {
       const cyl = scored.cyl;
       if (cyl.placed) continue;
@@ -491,7 +504,9 @@ export class OptimizedCoilSolver {
       let found = false;
       const step = cyl.diameter; // Step by diameter for grid-like placement
 
-      for (let y = 0; y + cyl.diameter <= this.L && !found; y += step) {
+      // CRITICAL: Only search within the compact block (Y <= maxVerticalY)
+      // Loop X first (fill width), then Y (add rows) for compact packing
+      for (let y = 0; y + cyl.diameter <= Math.min(maxVerticalY + step, this.L) && !found; y += step) {
         for (let x = 0; x + cyl.diameter <= this.W && !found; x += step) {
           const pos = { x, y, z: 0 };
           if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
@@ -501,9 +516,9 @@ export class OptimizedCoilSolver {
         }
       }
 
-      // Fine search if coarse failed
+      // Fine search within compact block if coarse failed
       if (!found) {
-        for (let y = 0; y + cyl.diameter <= this.L && !found; y += 5) {
+        for (let y = 0; y + cyl.diameter <= Math.min(maxVerticalY + step, this.L) && !found; y += 5) {
           for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
             const pos = { x, y, z: 0 };
             if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
@@ -517,26 +532,33 @@ export class OptimizedCoilSolver {
 
     console.log(`  After vertical phase: ${placed.length} placed`);
 
-    // PHASE 3: Place horizontal candidates (sorted by length descending)
+    // PHASE 3: Place horizontal candidates - prioritize STACKING on verticals first
+    // This shares Y footprint with verticals rather than requiring new Y space
+
+    // Get Z levels and sort: elevated (>0) first, then floor
+    const zLevels = this.getZLevels(placedBoxes);
+    const elevatedLevels = zLevels.filter(z => z > 0).sort((a, b) => a - b);
+    const floorLevels = zLevels.filter(z => z === 0);
+
+    console.log(`  Z levels for horizontal: elevated=${elevatedLevels}, floor=${floorLevels}`);
+
     for (const cyl of horizontalCandidates) {
       if (cyl.placed) continue;
 
       const { diameter, length } = cyl;
       let found = false;
 
-      // Get Z levels (floor + tops of verticals)
-      const zLevels = this.getZLevels(placedBoxes);
-
-      // Try each Z level
-      for (const z of zLevels) {
+      // FIRST: Try elevated Z levels (stacking on top of verticals)
+      // This shares Y footprint with verticals underneath
+      for (const z of elevatedLevels) {
         if (z + diameter > this.H || found) continue;
 
-        // Coarse search first
+        // Coarse search - prioritize positions above verticals (low Y values)
         for (let y = 0; y + length <= this.L && !found; y += 10) {
           for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
             const pos = { x, y, z };
             if (this.canPlace(pos, diameter, length, placedBoxes)) {
-              if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+              if (this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
                 placeCyl(cyl, pos, 'horizontal');
                 found = true;
               }
@@ -545,9 +567,22 @@ export class OptimizedCoilSolver {
         }
       }
 
-      // Fine search if not found
+      // SECOND: Try floor level (Y space beyond verticals)
       if (!found) {
-        for (const z of zLevels) {
+        for (let y = 0; y + length <= this.L && !found; y += 10) {
+          for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlace(pos, diameter, length, placedBoxes)) {
+              placeCyl(cyl, pos, 'horizontal');
+              found = true;
+            }
+          }
+        }
+      }
+
+      // Fine search on ALL levels if still not found
+      if (!found) {
+        for (const z of [...elevatedLevels, ...floorLevels]) {
           if (z + diameter > this.H || found) continue;
           for (let y = 0; y + length <= this.L && !found; y += 2) {
             for (let x = 0; x + diameter <= this.W && !found; x += 2) {
