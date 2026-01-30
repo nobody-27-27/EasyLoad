@@ -119,6 +119,7 @@ export class OptimizedCoilSolver {
       () => this.packReserveD85First(all), // Reserve positions for D=85x149.9 first, then pack rest
       () => this.packUniversalMaxFit(all), // Universal: calculates optimal mix for ANY cylinder set
       () => this.packMixedFloorOptimal(all), // MIXED FLOOR: vertical + horizontal on floor together
+      () => this.packProblemCylinderFirst(all), // PROBLEM FIRST: D85 longest placed first guaranteed
       () => this.packBestFitGreedySlow(all), // Slower but thorough best-fit (fallback)
     ];
 
@@ -132,7 +133,7 @@ export class OptimizedCoilSolver {
       'packByStackEfficiency', 'packCompact', 'packVerticalPriority', 'packMaximizeStacking',
       'packTightLayers', 'packAwkwardFirst', 'packOptimalVerticalHorizontal', 'packSmartLookahead',
       'packMultiOrderLookahead', 'packHorizontalStackedOptimal', 'packByLengthGroups',
-      'packReserveD85First', 'packUniversalMaxFit', 'packMixedFloorOptimal', 'packBestFitGreedySlow'
+      'packReserveD85First', 'packUniversalMaxFit', 'packMixedFloorOptimal', 'packProblemCylinderFirst', 'packBestFitGreedySlow'
     ];
 
     for (let i = 0; i < strategies.length; i++) {
@@ -5212,6 +5213,279 @@ export class OptimizedCoilSolver {
     const unplacedList = allCylinders.filter(c => !c.placed).map(c => c.item);
     console.log(`%c  Mixed Floor result: ${placed.length}/${allCylinders.length} placed`, 'background: #f50; color: #fff; font-size: 14px');
     return { placed, unplaced: unplacedList };
+  }
+
+  /**
+   * Problem Cylinder First - Specifically places the longest D85 cylinder FIRST
+   * This ensures the "problem" cylinder that always gets left out has guaranteed space
+   */
+  private packProblemCylinderFirst(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`%c=== PROBLEM CYLINDER FIRST ===`, 'background: #f0f; color: #fff; font-size: 14px');
+
+    // Find the "problem" cylinder: D=85, longest length (usually 149.9)
+    const problemCylinders = allCylinders
+      .filter(c => Math.abs(c.diameter - 85) < 5)
+      .sort((a, b) => b.length - a.length);
+
+    const otherCylinders = allCylinders.filter(c => Math.abs(c.diameter - 85) >= 5);
+
+    console.log(`  Problem cylinders (D~85): ${problemCylinders.length}`);
+    console.log(`  Other cylinders: ${otherCylinders.length}`);
+
+    if (problemCylinders.length === 0) {
+      console.log('  No D~85 cylinders found, falling back to normal packing');
+      return this.packVerticalPriority(allCylinders);
+    }
+
+    // PHASE 1: Place ALL D~85 cylinders FIRST, horizontally on floor, stacked 3 high
+    console.log(`  Phase 1: Placing D~85 cylinders FIRST (horizontal, 3-high stacks)`);
+
+    const d85 = problemCylinders[0].diameter;
+    const stackLayers = Math.floor(this.H / d85); // Should be 3 (269/85=3.16)
+    const colsPerRow = Math.floor(this.W / d85); // Should be 2 (235/85=2.76)
+
+    console.log(`  D85 stack config: ${colsPerRow} cols × ${stackLayers} layers = ${colsPerRow * stackLayers} per Y-section`);
+
+    let currentY = 0;
+
+    // Sort by length descending - place longest first (the problem one!)
+    problemCylinders.sort((a, b) => b.length - a.length);
+
+    while (problemCylinders.some(c => !c.placed)) {
+      const unplacedD85 = problemCylinders.filter(c => !c.placed);
+      if (unplacedD85.length === 0) break;
+
+      // Get the longest unplaced D85
+      const longestLen = unplacedD85[0].length;
+
+      // Check if we have Y space
+      if (currentY + longestLen > this.L) {
+        console.log(`  No more Y space for D85 at Y=${currentY.toFixed(0)} (need ${longestLen.toFixed(0)})`);
+        break;
+      }
+
+      // Place a section of D85 cylinders (2 cols × 3 layers = 6)
+      for (let layer = 0; layer < stackLayers; layer++) {
+        const z = layer * d85;
+        if (z + d85 > this.H) break;
+
+        for (let col = 0; col < colsPerRow; col++) {
+          const cyl = unplacedD85.find(c => !c.placed);
+          if (!cyl) break;
+
+          const x = col * d85;
+          const pos = { x, y: currentY, z };
+
+          // Check fit
+          if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            if (z === 0 || this.hasSupport(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCyl = this.createPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: x, xMax: x + cyl.diameter,
+                yMin: currentY, yMax: currentY + cyl.length,
+                zMin: z, zMax: z + cyl.diameter,
+              });
+              console.log(`    Placed D${cyl.diameter} L${cyl.length.toFixed(0)} at (${x}, ${currentY.toFixed(0)}, ${z})`);
+            }
+          }
+        }
+      }
+
+      currentY += longestLen;
+    }
+
+    console.log(`  After D85 phase: ${placed.length} placed, Y used: ${currentY.toFixed(0)}`);
+
+    // PHASE 2: Place other cylinders (smaller diameters) - prioritize vertical in remaining Y
+    console.log(`  Phase 2: Placing other cylinders in remaining space (Y=${currentY.toFixed(0)} to ${this.L})`);
+
+    // Sort other cylinders: smaller diameter first (they pack more efficiently vertically)
+    otherCylinders.sort((a, b) => a.diameter - b.diameter);
+
+    // Group by diameter
+    const otherByDiameter = new Map<number, Cylinder[]>();
+    for (const c of otherCylinders) {
+      if (!otherByDiameter.has(c.diameter)) otherByDiameter.set(c.diameter, []);
+      otherByDiameter.get(c.diameter)!.push(c);
+    }
+
+    const HEX_FACTOR = 0.866;
+
+    // Place verticals with hex packing in remaining Y space
+    for (const [d, cyls] of otherByDiameter) {
+      for (const cyl of cyls) {
+        if (cyl.placed) continue;
+        if (cyl.length > this.H) continue; // Can't be vertical
+
+        let found = false;
+        const rowSpacing = d * HEX_FACTOR;
+
+        // Try hex positions starting from currentY
+        for (let row = 0; !found; row++) {
+          const y = currentY + row * rowSpacing;
+          if (y + d > this.L) break;
+
+          const xOffset = (row % 2 === 1) ? d / 2 : 0;
+
+          for (let x = xOffset; x + d <= this.W && !found; x += d) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: x, xMax: x + d,
+                yMin: y, yMax: y + d,
+                zMin: 0, zMax: cyl.length,
+              });
+              found = true;
+            }
+          }
+        }
+
+        // Also try in the front area (Y=0 to currentY) if there's space beside D85
+        if (!found) {
+          for (let y = 0; y + d <= currentY && !found; y += 5) {
+            for (let x = colsPerRow * d85; x + d <= this.W && !found; x += 5) {
+              const pos = { x, y, z: 0 };
+              if (this.canPlaceVertical(pos, d, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: x, xMax: x + d,
+                  yMin: y, yMax: y + d,
+                  zMin: 0, zMax: cyl.length,
+                });
+                found = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`  After vertical phase: ${placed.length} placed`);
+
+    // PHASE 3: Stack horizontals on top of verticals
+    console.log(`  Phase 3: Stack horizontals on top`);
+
+    const zLevels = [...new Set(placedBoxes.map(b => b.zMax))].filter(z => z > 0).sort((a, b) => a - b);
+
+    for (const [, cyls] of otherByDiameter) {
+      for (const cyl of cyls) {
+        if (cyl.placed) continue;
+
+        let found = false;
+
+        for (const z of zLevels) {
+          if (found) break;
+          if (z + cyl.diameter > this.H) continue;
+
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: x, xMax: x + cyl.diameter,
+                    yMin: y, yMax: y + cyl.length,
+                    zMin: z, zMax: z + cyl.diameter,
+                  });
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // PHASE 4: Place any remaining D85 that didn't fit earlier
+    const remainingD85 = problemCylinders.filter(c => !c.placed);
+    if (remainingD85.length > 0) {
+      console.log(`  Phase 4: Placing ${remainingD85.length} remaining D85`);
+
+      for (const cyl of remainingD85) {
+        let found = false;
+
+        // Try anywhere with fine grid
+        for (let z = 0; z + cyl.diameter <= this.H && !found; z += cyl.diameter) {
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 2) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: x, xMax: x + cyl.diameter,
+                    yMin: y, yMax: y + cyl.length,
+                    zMin: z, zMax: z + cyl.diameter,
+                  });
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+
+        // Try vertical
+        if (!found && cyl.length <= this.H) {
+          for (let y = 0; y + cyl.diameter <= this.L && !found; y += 2) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 2) {
+              const pos = { x, y, z: 0 };
+              if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                placed.push(placedCyl);
+                cyl.placed = true;
+                placedBoxes.push({
+                  xMin: x, xMax: x + cyl.diameter,
+                  yMin: y, yMax: y + cyl.diameter,
+                  zMin: 0, zMax: cyl.length,
+                });
+                found = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // PHASE 5: Final pass for any remaining
+    const remaining = allCylinders.filter(c => !c.placed);
+    if (remaining.length > 0) {
+      console.log(`  Phase 5: Final exhaustive search for ${remaining.length} remaining`);
+
+      for (const cyl of remaining) {
+        const pos = this.exhaustiveSearch(cyl, placedBoxes);
+        if (pos) {
+          const placedCyl = this.createPlacedCylinder(cyl, pos);
+          placed.push(placedCyl);
+          cyl.placed = true;
+          placedBoxes.push({
+            xMin: pos.x, xMax: pos.x + cyl.diameter,
+            yMin: pos.y, yMax: pos.y + cyl.length,
+            zMin: pos.z, zMax: pos.z + cyl.diameter,
+          });
+        }
+      }
+    }
+
+    const finalUnplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
+    console.log(`%c  Problem First result: ${placed.length}/${allCylinders.length} placed`, 'background: #f0f; color: #fff; font-size: 14px');
+    return { placed, unplaced: finalUnplaced };
   }
 
   /**
