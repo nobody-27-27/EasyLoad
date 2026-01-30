@@ -18,6 +18,11 @@ export default function App() {
     container,
     stats,
     unplacedSummary,
+    aiAnalysis,
+    isLoadingAI,
+    requestAIAnalysis,
+    setApiKey,
+    getApiKey,
   } = useStore();
 
   const handleExport = () => {
@@ -251,6 +256,56 @@ export default function App() {
                       <li key={idx}>• {item.count}x {item.name}</li>
                     ))}
                   </ul>
+
+                  {/* AI Hints Button */}
+                  <button
+                    onClick={() => {
+                      const key = getApiKey();
+                      if (!key) {
+                        const newKey = prompt('Enter your Claude API key:');
+                        if (newKey) {
+                          setApiKey(newKey);
+                          requestAIAnalysis();
+                        }
+                      } else {
+                        requestAIAnalysis();
+                      }
+                    }}
+                    disabled={isLoadingAI}
+                    className="w-full mt-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white py-1.5 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors"
+                  >
+                    {isLoadingAI ? (
+                      <>
+                        <span className="animate-spin">⏳</span> AI Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <span>🤖</span> Get AI Hints
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* AI Analysis Results */}
+              {aiAnalysis && (
+                <div className="mt-3 p-2 bg-purple-50 border border-purple-200 rounded">
+                  <div className="text-xs font-bold text-purple-700 mb-1">
+                    AI Analysis:
+                  </div>
+                  <p className="text-xs text-purple-600 mb-2">{aiAnalysis.analysis}</p>
+                  {aiAnalysis.suggestions.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-xs font-semibold text-purple-700">Suggestions:</div>
+                      {aiAnalysis.suggestions.map((s, idx) => (
+                        <div key={idx} className="text-xs text-purple-600 bg-purple-100 p-1 rounded">
+                          <strong>Cylinder #{s.cylinderIndex + 1}</strong>: {s.orientation} at ({s.position.x.toFixed(0)}, {s.position.y.toFixed(0)}, {s.position.z.toFixed(0)})
+                          <br />
+                          <span className="text-purple-500">{s.reasoning}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {/* PDF Butonu */}

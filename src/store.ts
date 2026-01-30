@@ -9,6 +9,8 @@ import type {
 } from './core/common/types';
 import { CONTAINER_PRESETS } from './core/common/constants';
 import { MixedSolver } from './core/solvers/mixed-solver/orchestrator';
+import type { AIAnalysisResult } from './core/ai/packing-ai-service';
+import { packingAIService } from './core/ai/packing-ai-service';
 
 interface UnplacedSummary {
   name: string;
@@ -21,6 +23,11 @@ interface AppState {
   resultItems: PlacedItem[];
   unplacedSummary: UnplacedSummary[];
   isCalculating: boolean;
+
+  // AI Analysis
+  aiAnalysis: AIAnalysisResult | null;
+  isLoadingAI: boolean;
+  currentSolver: MixedSolver | null;
 
   // --- YENİ EKLENEN İSTATİSTİKLER ---
   stats: {
@@ -38,6 +45,11 @@ interface AppState {
   runCalculation: () => void;
   reset: () => void;
   loadProject: (data: Partial<AppState>) => void;
+
+  // AI methods
+  setApiKey: (key: string) => void;
+  getApiKey: () => string | null;
+  requestAIAnalysis: () => Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -46,6 +58,11 @@ export const useStore = create<AppState>((set, get) => ({
   resultItems: [],
   unplacedSummary: [],
   isCalculating: false,
+
+  // AI state
+  aiAnalysis: null,
+  isLoadingAI: false,
+  currentSolver: null,
 
   // Başlangıç istatistikleri (Boş)
   stats: {
@@ -90,12 +107,15 @@ export const useStore = create<AppState>((set, get) => ({
     const { container, cargoList } = get();
     if (cargoList.length === 0) return;
 
-    set({ isCalculating: true });
+    set({ isCalculating: true, aiAnalysis: null });
 
     setTimeout(() => {
       try {
         const solver = new MixedSolver(container);
         const { placedItems } = solver.solveWithReport(cargoList);
+
+        // Store solver for AI analysis
+        set({ currentSolver: solver });
 
         // --- İSTATİSTİK HESAPLAMA ---
         // 1. Konteyner Hacmi (cm3 -> m3 dönüşümü için 1.000.000'a bölüyoruz)
@@ -187,6 +207,8 @@ export const useStore = create<AppState>((set, get) => ({
       // Sonuçları ve istatistikleri sıfırla ki tekrar hesaplansın (veya onları da yükleyebilirsin)
       resultItems: [],
       unplacedSummary: [],
+      aiAnalysis: null,
+      currentSolver: null,
       stats: {
         totalVolume: 0,
         usedVolume: 0,
@@ -205,6 +227,8 @@ export const useStore = create<AppState>((set, get) => ({
     cargoList: [],
     resultItems: [],
     unplacedSummary: [],
+    aiAnalysis: null,
+    currentSolver: null,
     stats: {
       totalVolume: 0,
       usedVolume: 0,
@@ -214,4 +238,37 @@ export const useStore = create<AppState>((set, get) => ({
       unplacedCount: 0,
     },
   }),
+
+  // AI methods
+  setApiKey: (key: string) => {
+    packingAIService.setApiKey(key);
+  },
+
+  getApiKey: () => {
+    return packingAIService.getApiKey();
+  },
+
+  requestAIAnalysis: async () => {
+    const { currentSolver } = get();
+    if (!currentSolver) {
+      console.log('No solver available - run calculation first');
+      return;
+    }
+
+    if (!packingAIService.hasApiKey()) {
+      alert('Please set your Claude API key first');
+      return;
+    }
+
+    set({ isLoadingAI: true });
+
+    try {
+      const analysis = await currentSolver.getAIAnalysis();
+      set({ aiAnalysis: analysis, isLoadingAI: false });
+    } catch (error) {
+      console.error('AI analysis failed:', error);
+      set({ isLoadingAI: false });
+      alert('AI analysis failed. Check console for details.');
+    }
+  },
 }));

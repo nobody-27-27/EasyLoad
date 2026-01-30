@@ -3,6 +3,7 @@
 import type { Container, CargoItem, PlacedItem } from '../../common/types';
 import { WallBuilder } from '../box-solver/wall-builder';
 import { OptimizedCoilSolver } from '../coil-solver';
+import type { AIAnalysisResult } from '../../ai/packing-ai-service';
 
 /**
  * Configuration for the MixedSolver
@@ -23,9 +24,28 @@ export interface MixedSolverConfig {
  */
 export class MixedSolver {
   private container: Container;
+  private coilSolver: OptimizedCoilSolver | null = null;
 
   constructor(container: Container, _config: Partial<MixedSolverConfig> = {}) {
     this.container = container;
+  }
+
+  /**
+   * Get AI analysis for unplaced cylinders
+   */
+  public async getAIAnalysis(): Promise<AIAnalysisResult | null> {
+    if (!this.coilSolver) {
+      console.log('No coil solver available - run solve() first');
+      return null;
+    }
+    return this.coilSolver.getAIAnalysis();
+  }
+
+  /**
+   * Check if AI analysis is available (there are unplaced cylinders)
+   */
+  public hasUnplacedCylinders(): boolean {
+    return this.coilSolver?.pendingAIAnalysis !== null;
   }
 
   public solve(items: CargoItem[]): PlacedItem[] {
@@ -51,8 +71,8 @@ export class MixedSolver {
 
     // 2. Solve COILS using the OptimizedCoilSolver (tries 32 strategy combinations)
     if (coils.length > 0) {
-      const coilSolver = new OptimizedCoilSolver(this.container);
-      const coilResult = coilSolver.solve(coils);
+      this.coilSolver = new OptimizedCoilSolver(this.container);
+      const coilResult = this.coilSolver.solve(coils);
 
       // Convert PlacedCylinder to PlacedItem
       const coilPlacedItems = coilResult.placedCylinders.map((cyl) => ({
