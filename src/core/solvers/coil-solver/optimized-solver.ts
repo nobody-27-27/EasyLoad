@@ -166,6 +166,7 @@ export class OptimizedCoilSolver {
       () => this.packHorizontalStackedOptimal(all), // Horizontal with optimal Z-stacking for all 58
       () => this.packByLengthGroups(all), // Group by length for efficient Y-utilization
       () => this.packReserveD85First(all), // Reserve positions for D=85x149.9 first, then pack rest
+      () => this.packUniversalMaxFit(all), // Universal: calculates optimal mix for ANY cylinder set
       () => this.packBestFitGreedySlow(all), // Slower but thorough best-fit (fallback)
     ];
 
@@ -179,7 +180,7 @@ export class OptimizedCoilSolver {
       'packByStackEfficiency', 'packCompact', 'packVerticalPriority', 'packMaximizeStacking',
       'packTightLayers', 'packAwkwardFirst', 'packOptimalVerticalHorizontal', 'packSmartLookahead',
       'packMultiOrderLookahead', 'packHorizontalStackedOptimal', 'packByLengthGroups',
-      'packReserveD85First', 'packBestFitGreedySlow'
+      'packReserveD85First', 'packUniversalMaxFit', 'packBestFitGreedySlow'
     ];
 
     for (let i = 0; i < strategies.length; i++) {
@@ -4738,6 +4739,255 @@ export class OptimizedCoilSolver {
     const unplaced = allCylinders.filter(c => !c.placed).map(c => c.item);
     console.log(`  Reserve D85 first result: ${placed.length} placed, ${unplaced.length} unplaced`);
     return { placed, unplaced };
+  }
+
+  /**
+   * Universal Maximum Fit - Calculates optimal vertical/horizontal mix for ANY cylinder set
+   * Uses mathematical optimization to maximize total placement
+   */
+  private packUniversalMaxFit(allCylinders: Cylinder[]): { placed: PlacedCylinder[]; unplaced: CargoItem[] } {
+    allCylinders.forEach(c => c.placed = false);
+
+    const placed: PlacedCylinder[] = [];
+    const placedBoxes: PlacedBox[] = [];
+
+    console.log(`%c=== UNIVERSAL MAX-FIT PACKING ===`, 'background: #4a0; color: #fff; font-size: 14px');
+    console.log(`  Container: ${this.W}W × ${this.L}L × ${this.H}H`);
+    console.log(`  Cylinders: ${allCylinders.length}`);
+
+    // Group cylinders by diameter for analysis
+    const byDiameter = new Map<number, Cylinder[]>();
+    for (const c of allCylinders) {
+      if (!byDiameter.has(c.diameter)) byDiameter.set(c.diameter, []);
+      byDiameter.get(c.diameter)!.push(c);
+    }
+
+    // Calculate capacity for each diameter group
+    for (const [d, cyls] of byDiameter) {
+      const avgLen = cyls.reduce((s, c) => s + c.length, 0) / cyls.length;
+      // Vertical capacity: floor grid
+      const vCols = Math.floor(this.W / d);
+      const vRows = Math.floor(this.L / d);
+      const vFloor = vCols * vRows;
+      const vStack = avgLen * 2 <= this.H ? 2 : 1;
+      const vTotal = vFloor * vStack;
+
+      // Horizontal capacity: stacked layers
+      const hCols = Math.floor(this.W / d);
+      const hRows = Math.floor(this.L / avgLen);
+      const hStack = Math.floor(this.H / d);
+      const hTotal = hCols * hRows * hStack;
+
+      console.log(`  D${d}: ${cyls.length} cyls, avgL=${avgLen.toFixed(0)}, V-cap=${vTotal} (${vCols}×${vRows}×${vStack}), H-cap=${hTotal} (${hCols}×${hRows}×${hStack})`);
+    }
+
+    // Strategy: Fill floor with verticals using hexagonal packing, then stack horizontals on top
+    // Sort by diameter descending (larger first for floor stability)
+    const sortedDiameters = Array.from(byDiameter.keys()).sort((a, b) => b - a);
+
+    // PHASE 1: Pack verticals on floor using tight hexagonal pattern
+    console.log(`  Phase 1: Vertical floor packing (hexagonal)`);
+
+    const HEX_FACTOR = 0.866; // Hexagonal row spacing
+
+    for (const d of sortedDiameters) {
+      const cyls = byDiameter.get(d)!.filter(c => !c.placed && c.length <= this.H);
+      if (cyls.length === 0) continue;
+
+      // Sort by length ascending (shorter ones first - they might stack)
+      cyls.sort((a, b) => a.length - b.length);
+
+      const rowSpacing = d * HEX_FACTOR;
+
+      for (const cyl of cyls) {
+        if (cyl.placed) continue;
+
+        let found = false;
+
+        // Try hexagonal positions
+        for (let row = 0; !found; row++) {
+          const y = row * rowSpacing;
+          if (y + cyl.diameter > this.L) break;
+
+          const xOffset = (row % 2 === 1) ? d / 2 : 0;
+
+          for (let x = xOffset; x + cyl.diameter <= this.W && !found; x += d) {
+            const pos = { x, y, z: 0 };
+            if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+              const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+              placed.push(placedCyl);
+              cyl.placed = true;
+              placedBoxes.push({
+                xMin: x, xMax: x + cyl.diameter,
+                yMin: y, yMax: y + cyl.diameter,
+                zMin: 0, zMax: cyl.length,
+              });
+              found = true;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`  After vertical phase: ${placed.length} placed`);
+
+    // PHASE 2: Stack verticals on top of verticals (if height allows)
+    console.log(`  Phase 2: Stacking verticals`);
+
+    const floorBoxes = placedBoxes.filter(b => b.zMin === 0);
+
+    for (const d of sortedDiameters) {
+      const cyls = byDiameter.get(d)!.filter(c => !c.placed && c.length <= this.H);
+
+      for (const cyl of cyls) {
+        if (cyl.placed) continue;
+
+        // Find a floor vertical to stack on
+        for (const base of floorBoxes) {
+          if (base.zMax + cyl.length > this.H) continue;
+          if (Math.abs((base.xMax - base.xMin) - cyl.diameter) > 5) continue; // Similar diameter
+
+          const pos = { x: base.xMin, y: base.yMin, z: base.zMax };
+          if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+            const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+              xMin: pos.x, xMax: pos.x + cyl.diameter,
+              yMin: pos.y, yMax: pos.y + cyl.diameter,
+              zMin: pos.z, zMax: pos.z + cyl.length,
+            });
+            break;
+          }
+        }
+      }
+    }
+
+    console.log(`  After vertical stacking: ${placed.length} placed`);
+
+    // PHASE 3: Place horizontals on top of vertical area (sharing Y footprint)
+    console.log(`  Phase 3: Horizontal on top of verticals`);
+
+    const zLevels = [...new Set(placedBoxes.map(b => b.zMax))].sort((a, b) => a - b);
+
+    for (const d of sortedDiameters) {
+      const cyls = byDiameter.get(d)!.filter(c => !c.placed);
+      cyls.sort((a, b) => b.length - a.length); // Longest first
+
+      for (const cyl of cyls) {
+        if (cyl.placed) continue;
+
+        let found = false;
+
+        // Try each Z level
+        for (const z of zLevels) {
+          if (found) break;
+          if (z + cyl.diameter > this.H) continue;
+
+          // Search within placed area (where we have support)
+          for (let y = 0; y + cyl.length <= this.L && !found; y += 5) {
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 5) {
+              const pos = { x, y, z };
+              if (this.canPlace(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                if (z === 0 || this.hasSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  const placedCyl = this.createPlacedCylinder(cyl, pos);
+                  placed.push(placedCyl);
+                  cyl.placed = true;
+                  placedBoxes.push({
+                    xMin: x, xMax: x + cyl.diameter,
+                    yMin: y, yMax: y + cyl.length,
+                    zMin: z, zMax: z + cyl.diameter,
+                  });
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+
+        // Try rotated orientation
+        if (!found && cyl.length <= this.W) {
+          for (const z of zLevels) {
+            if (found) break;
+            if (z + cyl.diameter > this.H) continue;
+
+            for (let y = 0; y + cyl.diameter <= this.L && !found; y += 5) {
+              for (let x = 0; x + cyl.length <= this.W && !found; x += 5) {
+                const pos = { x, y, z };
+                if (this.canPlaceRotated(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (z === 0 || this.hasRotatedSupportRelaxed(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                    const placedCyl = this.createRotatedPlacedCylinder(cyl, pos);
+                    placed.push(placedCyl);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: x, xMax: x + cyl.length,
+                      yMin: y, yMax: y + cyl.diameter,
+                      zMin: z, zMax: z + cyl.diameter,
+                    });
+                    found = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`  After horizontal phase: ${placed.length} placed`);
+
+    // PHASE 4: Final exhaustive search for remaining
+    const remaining = allCylinders.filter(c => !c.placed);
+    if (remaining.length > 0) {
+      console.log(`  Phase 4: Exhaustive search for ${remaining.length} remaining`);
+
+      for (const cyl of remaining) {
+        // Try vertical first
+        if (cyl.length <= this.H) {
+          for (let y = 0; y + cyl.diameter <= this.L; y += 1) {
+            let found = false;
+            for (let x = 0; x + cyl.diameter <= this.W && !found; x += 1) {
+              for (let z = 0; z + cyl.length <= this.H && !found; z += 1) {
+                const pos = { x, y, z };
+                if (this.canPlaceVertical(pos, cyl.diameter, cyl.length, placedBoxes)) {
+                  if (z === 0 || this.hasVerticalSupport(pos, cyl.diameter, placedBoxes)) {
+                    const placedCyl = this.createVerticalPlacedCylinder(cyl, pos);
+                    placed.push(placedCyl);
+                    cyl.placed = true;
+                    placedBoxes.push({
+                      xMin: x, xMax: x + cyl.diameter,
+                      yMin: y, yMax: y + cyl.diameter,
+                      zMin: z, zMax: z + cyl.length,
+                    });
+                    found = true;
+                  }
+                }
+              }
+            }
+            if (found) break;
+          }
+        }
+
+        // Try horizontal if vertical didn't work
+        if (!cyl.placed) {
+          const pos = this.exhaustiveSearch(cyl, placedBoxes);
+          if (pos) {
+            const placedCyl = this.createPlacedCylinder(cyl, pos);
+            placed.push(placedCyl);
+            cyl.placed = true;
+            placedBoxes.push({
+              xMin: pos.x, xMax: pos.x + cyl.diameter,
+              yMin: pos.y, yMax: pos.y + cyl.length,
+              zMin: pos.z, zMax: pos.z + cyl.diameter,
+            });
+          }
+        }
+      }
+    }
+
+    const unplacedList = allCylinders.filter(c => !c.placed).map(c => c.item);
+    console.log(`%c  Universal Max-Fit result: ${placed.length}/${allCylinders.length} placed`, 'background: #4a0; color: #fff; font-size: 14px');
+    return { placed, unplaced: unplacedList };
   }
 
   /**
