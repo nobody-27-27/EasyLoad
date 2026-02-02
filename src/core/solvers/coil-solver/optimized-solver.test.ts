@@ -129,4 +129,78 @@ describe('OptimizedCoilSolver - 57/58 Bug Reproduction', () => {
     expect(result.placedCylinders.length).toBe(totalToPlace);
     expect(result.unplacedItems.length).toBe(0);
   });
+
+  /**
+   * BUG REPRODUCTION: 57/58 placement failure
+   *
+   * This test uses a diverse cargo mix that triggers the bug where:
+   * - packVerticalPriority becomes the best strategy (not packGuaranteed58)
+   * - Y gaps found at end of container are too small for D85
+   * - The last D85 L149.9 cannot find a position
+   * - But there IS space available that the algorithm misses
+   *
+   * The cargo mix includes multiple diameter sizes and lengths,
+   * which complicates the packing and exposes algorithm limitations.
+   */
+  it('should place all 58 cylinders when space is available (57/58 bug)', () => {
+    // Diverse cargo mix that may trigger algorithm limitations
+    // Mix of diameters: D60, D78, D85, D90, D100
+    // Mix of lengths: 137.2, 149.9, 152.4, 160, 200, 250
+    const cylinders: CargoItem[] = [
+      // Various D78 lengths
+      createCylinder('RULO 78x160', 78, 160, 20),
+      createCylinder('RULO 78x152.4', 78, 152.4, 8),
+      createCylinder('RULO 78x137.2', 78, 137.2, 6),
+      // D85 cylinders - the problematic ones
+      createCylinder('RULO 85x149.9', 85, 149.9, 12),
+      // Larger diameter cylinders
+      createCylinder('RULO 90x200', 90, 200, 6),
+      createCylinder('RULO 100x250', 100, 250, 4),
+      // Small diameter cylinder
+      createCylinder('RULO 60x160', 60, 160, 2),
+    ];
+
+    const totalToPlace = cylinders.reduce((sum, c) => sum + c.quantity, 0);
+    expect(totalToPlace).toBe(58);
+
+    const solver = new OptimizedCoilSolver(container40HC);
+    const result = solver.solve(cylinders);
+
+    // BUG: May place less than 58 due to algorithm limitations
+    // with diverse cargo that doesn't fit the "guaranteed" patterns
+    expect(result.placedCylinders.length).toBe(totalToPlace);
+    expect(result.unplacedItems.length).toBe(0);
+  });
+
+  /**
+   * BUG REPRODUCTION: Alternative scenario with tight Y-space
+   *
+   * This creates conditions where Y-space gets fragmented:
+   * - Multiple horizontal layers at different Z levels
+   * - Only small Y gaps remain at container end
+   * - D85 L149.9 should fit but algorithm can't find position
+   */
+  it('should find placement when Y-space is fragmented (57/58 variant)', () => {
+    // This mix creates fragmented Y-space usage
+    const cylinders: CargoItem[] = [
+      // Long D100 cylinders consume significant Y space horizontally
+      createCylinder('RULO 100x250', 100, 250, 8),
+      // D85 medium length
+      createCylinder('RULO 85x149.9', 85, 149.9, 18),
+      // D78 fill the gaps
+      createCylinder('RULO 78x160', 78, 160, 24),
+      // Small D60 for remaining spots
+      createCylinder('RULO 60x137.2', 60, 137.2, 8),
+    ];
+
+    const totalToPlace = cylinders.reduce((sum, c) => sum + c.quantity, 0);
+    expect(totalToPlace).toBe(58);
+
+    const solver = new OptimizedCoilSolver(container40HC);
+    const result = solver.solve(cylinders);
+
+    // All 58 should be placed
+    expect(result.placedCylinders.length).toBe(totalToPlace);
+    expect(result.unplacedItems.length).toBe(0);
+  });
 });
