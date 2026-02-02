@@ -446,7 +446,7 @@ export class OptimizedCoilSolver {
 
     console.log(`  After vertical phase: ${placed.length} placed`);
 
-    // PHASE 2: Place D>=85 as HORIZONTAL
+    // PHASE 2: Place D>=85 - try VERTICAL first when it saves Y-space, then HORIZONTAL
     // Sort by length DESCENDING - longest (L=149.9) gets placed first
     largeDiameter.sort((a, b) => b.length - a.length);
 
@@ -463,16 +463,27 @@ export class OptimizedCoilSolver {
       }
       zLevels.sort((a, b) => a - b);
 
-      // Try each Z level
-      for (const z of zLevels) {
-        if (z + diameter > this.H || found) continue;
-
-        for (let y = 0; y + length <= this.L && !found; y += 5) {
+      // Try VERTICAL first if it fits and saves Y-space (diameter < length)
+      // D85 L149.9: vertical uses 85cm Y vs 149.9cm horizontal (43% savings!)
+      if (length <= this.H && diameter < length) {
+        // Try vertical placement at floor level first
+        for (let y = 0; y + diameter <= this.L && !found; y += diameter) {
           for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
-            const pos = { x, y, z };
-            if (this.canPlace(pos, diameter, length, placedBoxes)) {
-              if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
-                placeCyl(cyl, pos, 'horizontal');
+            const pos = { x, y, z: 0 };
+            if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
+              placeCyl(cyl, pos, 'vertical');
+              found = true;
+            }
+          }
+        }
+
+        // Fine search for vertical if not found
+        if (!found) {
+          for (let y = 0; y + diameter <= this.L && !found; y += 1) {
+            for (let x = 0; x + diameter <= this.W && !found; x += 1) {
+              const pos = { x, y, z: 0 };
+              if (this.canPlaceVertical(pos, diameter, length, placedBoxes)) {
+                placeCyl(cyl, pos, 'vertical');
                 found = true;
               }
             }
@@ -480,12 +491,14 @@ export class OptimizedCoilSolver {
         }
       }
 
-      // Fine search if not found
+      // Try HORIZONTAL if vertical didn't work or wasn't applicable
       if (!found) {
+        // Try each Z level
         for (const z of zLevels) {
           if (z + diameter > this.H || found) continue;
-          for (let y = 0; y + length <= this.L && !found; y += 1) {
-            for (let x = 0; x + diameter <= this.W && !found; x += 1) {
+
+          for (let y = 0; y + length <= this.L && !found; y += 5) {
+            for (let x = 0; x + diameter <= this.W && !found; x += diameter) {
               const pos = { x, y, z };
               if (this.canPlace(pos, diameter, length, placedBoxes)) {
                 if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
@@ -496,10 +509,28 @@ export class OptimizedCoilSolver {
             }
           }
         }
+
+        // Fine search if not found
+        if (!found) {
+          for (const z of zLevels) {
+            if (z + diameter > this.H || found) continue;
+            for (let y = 0; y + length <= this.L && !found; y += 1) {
+              for (let x = 0; x + diameter <= this.W && !found; x += 1) {
+                const pos = { x, y, z };
+                if (this.canPlace(pos, diameter, length, placedBoxes)) {
+                  if (z === 0 || this.hasSupportRelaxed(pos, diameter, length, placedBoxes)) {
+                    placeCyl(cyl, pos, 'horizontal');
+                    found = true;
+                  }
+                }
+              }
+            }
+          }
+        }
       }
 
       if (!found) {
-        console.log(`    FAILED horizontal for D${diameter} L${length}`);
+        console.log(`    FAILED to place D${diameter} L${length}`);
       }
     }
 
