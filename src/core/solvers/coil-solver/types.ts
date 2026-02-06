@@ -156,10 +156,8 @@ export function getOrientedDimensions(
 export function getAllowedOrientations(item: CargoItem): CylinderOrientation[] {
   const orientations: CylinderOrientation[] = [];
 
-  // Vertical is always allowed unless x-rotation (tipping) is required
-  if (!item.allowedRotation.x || item.allowedRotation.x) {
-    orientations.push('vertical');
-  }
+  // Vertical is always allowed (default orientation)
+  orientations.push('vertical');
 
   // Horizontal-Y (laying along depth) requires x-rotation
   if (item.allowedRotation.x) {
@@ -177,4 +175,36 @@ export function getAllowedOrientations(item: CargoItem): CylinderOrientation[] {
   }
 
   return orientations;
+}
+
+/**
+ * Internal cylinder representation for the optimized solver.
+ */
+export interface SolverCylinder {
+  item: CargoItem;
+  diameter: number;
+  length: number;
+  index: number;
+  placed: boolean;
+}
+
+/**
+ * Axis-aligned bounding box for collision detection.
+ */
+export interface PlacedBox {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+  zMin: number;
+  zMax: number;
+}
+
+/**
+ * Result from a single packing strategy.
+ */
+export interface StrategyResult {
+  placed: PlacedCylinder[];
+  unplaced: CargoItem[];
+  placedBoxes: PlacedBox[];
 }

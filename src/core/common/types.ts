@@ -1,17 +1,16 @@
 // src/core/common/types.ts
 
 /**
- * 3D uzayda boyut tanımları.
- * cm cinsinden çalışacağız.
+ * 3D dimensions in centimeters.
  */
 export interface Dimensions {
-  width: number; // X Ekseni (En)
-  length: number; // Y Ekseni (Boy/Derinlik)
-  height: number; // Z Ekseni (Yükseklik)
+  width: number;  // X axis
+  length: number; // Y axis (depth)
+  height: number; // Z axis
 }
 
 /**
- * Uzaydaki bir noktanın veya vektörün tanımı.
+ * 3D vector / point.
  */
 export interface Vector3 {
   x: number;
@@ -20,55 +19,71 @@ export interface Vector3 {
 }
 
 /**
- * Yük Tipleri
+ * Cargo types supported by the system.
  */
 export type CargoType = 'box' | 'cylinder' | 'pallet';
 
 /**
- * Kullanıcının gireceği HAM veri (Sipariş Listesi).
+ * Raw cargo item as entered by the user.
  */
 export interface CargoItem {
-  id: string; // Benzersiz ID (UUID)
-  name: string; // Ürün adı
-  type: CargoType; // Tip A, B, C
-  quantity: number; // Adet
-  color: string; // Görselleştirme rengi
-
-  // Fiziksel Özellikler
-  dimensions: Dimensions; // Rulo için: width=çap, length=çap, height=uzunluk
-  weight?: number; // Gelecek versiyon (v2) için hazırlık
-
-  // Kısıtlamalar
-  stackable: boolean; // Üstüne başka ürün konabilir mi?
-  maxStackWeight?: number; // Üstüne ne kadar yük binebilir? (v2)
-
+  id: string;
+  name: string;
+  type: CargoType;
+  quantity: number;
+  color: string;
+  dimensions: Dimensions;
+  weight?: number;
+  stackable: boolean;
+  maxStackWeight?: number;
   allowedRotation: {
-    x: boolean; // Devrilebilir mi? (Genelde Rulo/Koli için)
-    y: boolean; // Zemin ekseninde dönebilir mi? (90 derece)
-    z: boolean; // (Nadir kullanılır)
+    x: boolean;
+    y: boolean;
+    z: boolean;
   };
 }
 
 /**
- * Hesaplama sonucu yerleştirilmiş ürün.
- * CargoItem'ın tüm özelliklerini taşır + Koordinat bilgisi eklenir.
+ * A placed item with position and rotation in container space.
  */
 export interface PlacedItem extends CargoItem {
-  // Yerleşim Bilgisi
-  position: Vector3; // Konteyner içindeki (x,y,z) koordinatı (Sol-Alt-Arka köşe)
-  rotation: Vector3; // Dönüş açıları (Radyan cinsinden: 0, PI/2 vb.)
-
-  // Takip Bilgisi
-  uniqueId: string; // Her bir tekil kutu için ayrı ID (Örn: KoliA_1, KoliA_2)
-  layerId?: number; // Hangi katmanda olduğu (Opsiyonel)
+  position: Vector3;
+  rotation: Vector3;
+  uniqueId: string;
+  layerId?: number;
 }
 
 /**
- * Araç / Konteyner Tanımı
+ * Container type identifiers.
+ */
+export type ContainerType = 'Truck' | '40HC' | '40DC' | '20DC' | 'Custom';
+
+/**
+ * Container / vehicle definition.
  */
 export interface Container {
   name: string;
-  type: 'Truck' | '40HC' | '40DC' | '20DC' | 'Custom';
+  type: ContainerType;
   dimensions: Dimensions;
   maxWeight?: number;
+}
+
+/**
+ * Summary of items that could not be placed.
+ */
+export interface UnplacedSummary {
+  name: string;
+  count: number;
+}
+
+/**
+ * Loading statistics after calculation.
+ */
+export interface LoadingStats {
+  totalVolume: number;
+  usedVolume: number;
+  fillRate: number;
+  placedCount: number;
+  totalCount: number;
+  unplacedCount: number;
 }

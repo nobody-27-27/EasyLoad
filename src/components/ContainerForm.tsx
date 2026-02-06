@@ -53,10 +53,6 @@ export const ContainerForm: React.FC = () => {
                 {preset.name}
               </option>
             ))}
-            {/* Eğer listede yoksa Custom seçeneğini ekle */}
-            {!Object.keys(CONTAINER_PRESETS).includes(container.type) && (
-              <option value="Custom">Özel Boyut (Custom)</option>
-            )}
             <option value="Custom">Özel Tanımla...</option>
           </select>
         </div>
