@@ -202,13 +202,8 @@ export class OptimizedCoilSolver {
     }
 
     const unplaced = correctUnplaced;
-    // The actual unique placed count is total - unplaced
-    const uniquePlacedCount = all.length - unplaced.length;
 
-    if (unplaced.length > 0) {
-    }
-
-    // Remove any duplicates from placed array to match unique count
+    // Remove any duplicates from placed array
     const seenPositions = new Set<string>();
     const uniquePlaced: PlacedCylinder[] = [];
     for (const p of bestResult!.placed) {
@@ -227,9 +222,145 @@ export class OptimizedCoilSolver {
   }
 
   /**
-   * GUARANTEED 58/58 - Specifically designed to fit ALL cylinders
-   * CRITICAL: Places longest D=85 (L=149.9) FIRST before anything else consumes Y space
+   * Run fallback passes to try to place any remaining cylinders after the best strategy.
+   * Tries: exhaustive horizontal search, vertical placement, honeycomb vertical, and aggressive all-orientation search.
    */
+  private runFallbackPasses(all: Cylinder[], bestResult: StrategyResult): void {
+    // Pass 1: Exhaustive horizontal search for any unplaced
+    const unplacedCyls = all.filter(c => !c.placed);
+    if (unplacedCyls.length > 0) {
+      unplacedCyls.sort((a, b) => a.diameter - b.diameter);
+
+      for (const cyl of unplacedCyls) {
+        if (cyl.placed) continue;
+
+        const pos = this.exhaustiveSearch(cyl, bestResult.placedBoxes);
+        if (pos) {
+          const placedCyl = this.createPlacedCylinder(cyl, pos);
+          bestResult.placed.push(placedCyl);
+          bestResult.placedBoxes.push({
+            xMin: pos.x, xMax: pos.x + cyl.diameter,
+            yMin: pos.y, yMax: pos.y + cyl.length,
+            zMin: pos.z, zMax: pos.z + cyl.diameter,
+          });
+          cyl.placed = true;
+        }
+      }
+    }
+
+    // Pass 2: Vertical placement for any remaining unplaced
+    const stillUnplaced = all.filter(c => !c.placed);
+    if (stillUnplaced.length > 0) {
+      stillUnplaced.sort((a, b) => a.diameter - b.diameter);
+
+      for (const cyl of stillUnplaced) {
+        if (cyl.length > this.H) continue;
+
+        const vertPos = this.findVerticalPosition(cyl, bestResult.placedBoxes);
+        if (vertPos) {
+          const placedCyl = this.createVerticalPlacedCylinder(cyl, vertPos);
+          bestResult.placed.push(placedCyl);
+          bestResult.placedBoxes.push({
+            xMin: vertPos.x, xMax: vertPos.x + cyl.diameter,
+            yMin: vertPos.y, yMax: vertPos.y + cyl.diameter,
+            zMin: vertPos.z, zMax: vertPos.z + cyl.length,
+          });
+          cyl.placed = true;
+        }
+      }
+
+      bestResult.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+
+    // Pass 3: Honeycomb vertical positions for remaining cylinders
+    const honeycombUnplaced = all.filter(c => !c.placed && c.length <= this.H);
+    if (honeycombUnplaced.length > 0) {
+      for (const cyl of honeycombUnplaced) {
+        if (cyl.placed) continue;
+
+        const d = cyl.diameter;
+        const HEX_Y_SPACING = d * 0.866;
+        let found = false;
+
+        for (let row = 0; !found; row++) {
+          const baseY = row * HEX_Y_SPACING;
+          if (baseY + d > this.L) break;
+
+          const xOffset = (row % 2 === 1) ? d / 2 : 0;
+
+          for (let gx = xOffset; gx + d <= this.W && !found; gx += d) {
+            const pos = { x: gx, y: baseY, z: 0 };
+            if (this.canPlaceVertical(pos, d, cyl.length, bestResult.placedBoxes)) {
+              bestResult.placed.push(this.createVerticalPlacedCylinder(cyl, pos));
+              bestResult.placedBoxes.push({
+                xMin: pos.x, xMax: pos.x + d,
+                yMin: pos.y, yMax: pos.y + d,
+                zMin: 0, zMax: cyl.length,
+              });
+              cyl.placed = true;
+              found = true;
+            }
+          }
+        }
+
+        if (!found) {
+          for (let gy = 0; gy + d <= this.L && !found; gy += 2) {
+            for (let gx = 0; gx + d <= this.W && !found; gx += 2) {
+              const pos = { x: gx, y: gy, z: 0 };
+              if (this.canPlaceVertical(pos, d, cyl.length, bestResult.placedBoxes)) {
+                bestResult.placed.push(this.createVerticalPlacedCylinder(cyl, pos));
+                bestResult.placedBoxes.push({
+                  xMin: pos.x, xMax: pos.x + d,
+                  yMin: pos.y, yMax: pos.y + d,
+                  zMin: 0, zMax: cyl.length,
+                });
+                cyl.placed = true;
+                found = true;
+              }
+            }
+          }
+        }
+      }
+
+      bestResult.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+
+    // Pass 4: Aggressive placement with step=1 on all Z levels and all orientations
+    const superFinalUnplaced = all.filter(c => !c.placed);
+    if (superFinalUnplaced.length > 0) {
+      for (const cyl of superFinalUnplaced) {
+        const result = this.tryAggressivePlacement(cyl, bestResult.placedBoxes);
+        if (result) {
+          if (result.orientation === 'horizontal-y') {
+            bestResult.placed.push(this.createPlacedCylinder(cyl, result.pos));
+            bestResult.placedBoxes.push({
+              xMin: result.pos.x, xMax: result.pos.x + cyl.diameter,
+              yMin: result.pos.y, yMax: result.pos.y + cyl.length,
+              zMin: result.pos.z, zMax: result.pos.z + cyl.diameter,
+            });
+          } else if (result.orientation === 'vertical') {
+            bestResult.placed.push(this.createVerticalPlacedCylinder(cyl, result.pos));
+            bestResult.placedBoxes.push({
+              xMin: result.pos.x, xMax: result.pos.x + cyl.diameter,
+              yMin: result.pos.y, yMax: result.pos.y + cyl.diameter,
+              zMin: result.pos.z, zMax: result.pos.z + cyl.length,
+            });
+          } else {
+            bestResult.placed.push(this.createRotatedPlacedCylinder(cyl, result.pos));
+            bestResult.placedBoxes.push({
+              xMin: result.pos.x, xMax: result.pos.x + cyl.length,
+              yMin: result.pos.y, yMax: result.pos.y + cyl.diameter,
+              zMin: result.pos.z, zMax: result.pos.z + cyl.diameter,
+            });
+          }
+          cyl.placed = true;
+        }
+      }
+
+      bestResult.unplaced = all.filter(c => !c.placed).map(c => c.item);
+    }
+  }
+
   /**
    * ADAPTIVE BEST-FIT ALGORITHM
    *
