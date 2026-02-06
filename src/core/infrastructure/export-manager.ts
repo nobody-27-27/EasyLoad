@@ -1,23 +1,11 @@
 // src/core/infrastructure/export-manager.ts
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { Container, PlacedItem, CargoItem } from '../common/types';
-
-interface UnplacedSummary {
-  name: string;
-  count: number;
-}
+import type { Container, PlacedItem, CargoItem, UnplacedSummary, LoadingStats } from '../common/types';
 
 interface ReportData {
   container: Container;
-  stats: {
-    totalVolume: number;
-    usedVolume: number;
-    fillRate: number;
-    placedCount: number;
-    totalCount: number;
-    unplacedCount?: number;
-  };
+  stats: LoadingStats;
   cargoList: CargoItem[]; // Yüklenemeyenleri bulmak için
   resultItems: PlacedItem[];
   unplacedSummary?: UnplacedSummary[];

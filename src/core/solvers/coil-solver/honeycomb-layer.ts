@@ -247,12 +247,4 @@ export class HoneycombLayerBuilder {
     });
     return queue;
   }
-
-  // Interface uyumluluğu için boş metodlar (Legacy stubs)
-  public solveVertical(_s: number, _m: number, _i: CargoItem[]) {
-    return [];
-  }
-  public solveHorizontal(_s: number, _i: CargoItem[]) {
-    return [];
-  }
 }

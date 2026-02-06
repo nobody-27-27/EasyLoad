@@ -6,31 +6,21 @@ import type {
   CargoItem,
   PlacedItem,
   Dimensions,
+  LoadingStats,
+  UnplacedSummary,
 } from './core/common/types';
 import { CONTAINER_PRESETS } from './core/common/constants';
 import { MixedSolver } from './core/solvers/mixed-solver/orchestrator';
+import { calculateStats, EMPTY_STATS } from './core/common/statistics';
+import { showToast } from './components/Toast';
 
-interface UnplacedSummary {
-  name: string;
-  count: number;
-}
-
-interface AppState {
+export interface AppState {
   container: Container;
   cargoList: CargoItem[];
   resultItems: PlacedItem[];
   unplacedSummary: UnplacedSummary[];
   isCalculating: boolean;
-
-  // --- YENİ EKLENEN İSTATİSTİKLER ---
-  stats: {
-    totalVolume: number; // Konteyner Hacmi (m3)
-    usedVolume: number; // Yüklerin Hacmi (m3)
-    fillRate: number; // Doluluk Oranı (%)
-    placedCount: number; // Yerleşen Adet
-    totalCount: number; // Toplam Adet
-    unplacedCount: number; // Yerleşmeyen Adet
-  };
+  stats: LoadingStats;
 
   setContainer: (type: string, customDims?: Dimensions) => void;
   addCargo: (item: Omit<CargoItem, 'id'>) => void;
@@ -46,16 +36,7 @@ export const useStore = create<AppState>((set, get) => ({
   resultItems: [],
   unplacedSummary: [],
   isCalculating: false,
-
-  // Başlangıç istatistikleri (Boş)
-  stats: {
-    totalVolume: 0,
-    usedVolume: 0,
-    fillRate: 0,
-    placedCount: 0,
-    totalCount: 0,
-    unplacedCount: 0,
-  },
+  stats: EMPTY_STATS,
 
   setContainer: (type, customDims) => {
     let newContainer = { ...CONTAINER_PRESETS['TRUCK'] };
@@ -96,122 +77,38 @@ export const useStore = create<AppState>((set, get) => ({
       try {
         const solver = new MixedSolver(container);
         const { placedItems } = solver.solveWithReport(cargoList);
-
-        // --- İSTATİSTİK HESAPLAMA ---
-        // 1. Konteyner Hacmi (cm3 -> m3 dönüşümü için 1.000.000'a bölüyoruz)
-        const contVol =
-          (container.dimensions.width *
-            container.dimensions.length *
-            container.dimensions.height) /
-          1_000_000;
-
-        // 2. Yüklenenlerin Hacmi
-        let usedVol = 0;
-        placedItems.forEach((item) => {
-          if (item.type === 'cylinder') {
-            // Silindir hacmi: π * r² * h
-            const r = item.dimensions.width / 2;
-            usedVol += Math.PI * r * r * item.dimensions.height;
-          } else {
-            usedVol +=
-              item.dimensions.width *
-              item.dimensions.length *
-              item.dimensions.height;
-          }
-        });
-        usedVol = usedVol / 1_000_000; // m3
-
-        // 3. Doluluk Oranı
-        const rate = (usedVol / contVol) * 100;
-
-        // 4. Toplam Adet (Miktar bazlı)
-        const totalQty = cargoList.reduce(
-          (acc, item) => acc + item.quantity,
-          0
-        );
-
-        // 5. Yerleşmeyen yükleri grupla
-        const unplacedMap = new Map<string, number>();
-        const unplacedCount = totalQty - placedItems.length;
-
-        // CargoList'ten yerleşmeyenleri bul
-        const placedByName = new Map<string, number>();
-        placedItems.forEach((item) => {
-          const key = item.name;
-          placedByName.set(key, (placedByName.get(key) || 0) + 1);
-        });
-
-        cargoList.forEach((cargo) => {
-          const placedOfThis = placedByName.get(cargo.name) || 0;
-          const unplacedOfThis = cargo.quantity - placedOfThis;
-          if (unplacedOfThis > 0) {
-            unplacedMap.set(cargo.name, unplacedOfThis);
-          }
-          // Adjust for next same-named cargo
-          if (placedOfThis > 0) {
-            placedByName.set(cargo.name, Math.max(0, placedOfThis - cargo.quantity));
-          }
-        });
-
-        const unplacedSummary = Array.from(unplacedMap.entries()).map(([name, count]) => ({
-          name,
-          count,
-        }));
+        const { stats, unplacedSummary } = calculateStats(container, cargoList, placedItems);
 
         set({
           resultItems: placedItems,
           unplacedSummary,
           isCalculating: false,
-          stats: {
-            totalVolume: Number(contVol.toFixed(2)),
-            usedVolume: Number(usedVol.toFixed(2)),
-            fillRate: Number(rate.toFixed(2)),
-            placedCount: placedItems.length,
-            totalCount: totalQty,
-            unplacedCount,
-          },
+          stats,
         });
       } catch (e) {
         console.error(e);
         set({ isCalculating: false });
-        alert('Hesaplama Hatası!');
+        showToast('Hesaplama Hatasi!', 'error');
       }
     }, 100);
   },
 
   loadProject: (data) => {
-    // Gelen veriyi store'a yaz
     set({
       container: data.container || CONTAINER_PRESETS['TRUCK'],
       cargoList: data.cargoList || [],
-      // Sonuçları ve istatistikleri sıfırla ki tekrar hesaplansın (veya onları da yükleyebilirsin)
       resultItems: [],
       unplacedSummary: [],
-      stats: {
-        totalVolume: 0,
-        usedVolume: 0,
-        fillRate: 0,
-        placedCount: 0,
-        totalCount: 0,
-        unplacedCount: 0,
-      },
+      stats: EMPTY_STATS,
       isCalculating: false,
     });
-
-    // Toast notification will be shown by the component
   },
 
-  reset: () => set({
-    cargoList: [],
-    resultItems: [],
-    unplacedSummary: [],
-    stats: {
-      totalVolume: 0,
-      usedVolume: 0,
-      fillRate: 0,
-      placedCount: 0,
-      totalCount: 0,
-      unplacedCount: 0,
-    },
-  }),
+  reset: () =>
+    set({
+      cargoList: [],
+      resultItems: [],
+      unplacedSummary: [],
+      stats: EMPTY_STATS,
+    }),
 }));

@@ -50,6 +50,3 @@ export {
   getOrientedDimensions,
   getAllowedOrientations,
 } from './types';
-
-// Legacy export for backwards compatibility
-export { HoneycombLayerBuilder } from './honeycomb-layer';
